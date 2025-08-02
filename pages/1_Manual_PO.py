@@ -43,7 +43,6 @@ def manual_po_page():
 
     tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
 
-    # --- Unified handler for adding items by barcode ---
     def add_item_by_barcode(barcode):
         code = str(barcode).strip()
         if not code:
@@ -67,7 +66,12 @@ def manual_po_page():
                     "quantity": 1,
                     "estimated_price": 0.0,
                     "supplierid": supplierid,
-                    "suppliername": suppliername
+                    "suppliername": suppliername,
+                    # Add tags:
+                    "classcat": found_row.get("classcat", ""),
+                    "departmentcat": found_row.get("departmentcat", ""),
+                    "sectioncat": found_row.get("sectioncat", ""),
+                    "familycat": found_row.get("familycat", ""),
                 })
                 st.success(f"Added: {found_row['itemnameenglish']}")
                 st.rerun()
@@ -109,16 +113,31 @@ def manual_po_page():
         for idx, po in enumerate(po_items):
             card = st.container()
             with card:
-                c1, c2, c3, c4, c5 = st.columns([3,2,2,2,1])
-                c1.markdown(f"**🛒 {po['itemname']}**  \nBarcode: `{po['barcode']}`")
-                qty = c2.number_input("Qty", min_value=1, value=po["quantity"], step=1, key=f"qty_{idx}")
-                price = c3.number_input("Est. Price", min_value=0.0, value=po["estimated_price"], step=0.01, key=f"price_{idx}")
-                c4.markdown(f"**Supplier:** {po['suppliername']}")
-                remove = c5.button("Remove", key=f"rm_{idx}")
+                # Card header: name and barcode
+                st.markdown(
+                    f"<div style='font-size:18px;font-weight:700;color:#174e89;margin-bottom:2px;'>🛒 {po['itemname']}</div>"
+                    f"<div style='font-size:14px;color:#086b37;margin-bottom:3px;'>Barcode: <code>{po['barcode']}</code></div>",
+                    unsafe_allow_html=True,
+                )
+                # Tags row
+                tags = [
+                    f"<span style='background:#fff3e0;color:#C61C1C;border-radius:7px;padding:3px 12px 3px 12px;font-size:13.5px;margin-right:6px;'><b>Class:</b> {po.get('classcat','')}</span>",
+                    f"<span style='background:#e3f2fd;color:#004CBB;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Department:</b> {po.get('departmentcat','')}</span>",
+                    f"<span style='background:#eafaf1;color:#098A23;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Section:</b> {po.get('sectioncat','')}</span>",
+                    f"<span style='background:#fff8e1;color:#FF8800;border-radius:7px;padding:3px 12px;font-size:13.5px;'><b>Family:</b> {po.get('familycat','')}</span>",
+                ]
+                st.markdown(f"<div style='margin-bottom:4px;'>{''.join(tags)}</div>", unsafe_allow_html=True)
+                # Edit controls row
+                c1, c2, c3, c4 = st.columns([2,2,2,1])
+                qty = c1.number_input("Qty", min_value=1, value=po["quantity"], step=1, key=f"qty_{idx}")
+                price = c2.number_input("Est. Price", min_value=0.0, value=po["estimated_price"], step=0.01, key=f"price_{idx}")
+                c3.markdown(f"**Supplier:** {po['suppliername']}")
+                remove = c4.button("Remove", key=f"rm_{idx}")
                 po["quantity"] = qty
                 po["estimated_price"] = price
                 if remove:
                     to_remove.append(idx)
+                st.markdown("---")
         if to_remove:
             for idx in reversed(to_remove):
                 st.session_state["po_items"].pop(idx)
@@ -170,7 +189,6 @@ def manual_po_page():
             st.session_state["latest_po_results"] = results
             st.rerun()
 
-    # --- Result tab (second page) ---
     results = st.session_state["latest_po_results"]
     st.header("📄 Generated Purchase Orders")
     if not results:
