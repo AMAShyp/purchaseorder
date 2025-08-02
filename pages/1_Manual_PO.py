@@ -43,6 +43,14 @@ def manual_po_page():
 
     tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
 
+    def get_suppliers_for_item(item_id):
+        mappings = mapping_df[mapping_df["itemid"] == item_id]
+        return [
+            (int(m["supplierid"]), suppliers_df[suppliers_df["supplierid"] == int(m["supplierid"])]["suppliername"].values[0])
+            for _, m in mappings.iterrows()
+            if not suppliers_df[suppliers_df["supplierid"] == int(m["supplierid"])].empty
+        ]
+
     def add_item_by_barcode(barcode):
         code = str(barcode).strip()
         if not code:
@@ -54,27 +62,30 @@ def manual_po_page():
             st.warning(f"Barcode '{code}' not found.")
             return
         item_id = int(found_row["itemid"])
+        # Skip if already added (by item+supplier)
         if not any(po["item_id"] == item_id for po in st.session_state["po_items"]):
-            mapping = mapping_df[mapping_df["itemid"] == item_id]
-            if not mapping.empty:
-                supplierid = int(mapping.iloc[0]["supplierid"])
-                suppliername = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"].values[0]
-                st.session_state["po_items"].append({
-                    "item_id": item_id,
-                    "itemname": found_row["itemnameenglish"],
-                    "barcode": code,
-                    "quantity": 1,
-                    "estimated_price": 0.0,
-                    "supplierid": supplierid,
-                    "suppliername": suppliername,
-                    # Add tags:
-                    "classcat": found_row.get("classcat", ""),
-                    "departmentcat": found_row.get("departmentcat", ""),
-                    "sectioncat": found_row.get("sectioncat", ""),
-                    "familycat": found_row.get("familycat", ""),
-                })
-                st.success(f"Added: {found_row['itemnameenglish']}")
-                st.rerun()
+            supplier_options = get_suppliers_for_item(item_id)
+            if not supplier_options:
+                st.warning(f"No supplier found for item '{found_row['itemnameenglish']}'.")
+                return
+            supplierid, suppliername = supplier_options[0]
+            st.session_state["po_items"].append({
+                "item_id": item_id,
+                "itemname": found_row["itemnameenglish"],
+                "barcode": code,
+                "quantity": 1,
+                "estimated_price": 0.0,
+                "supplierid": supplierid,
+                "suppliername": suppliername,
+                "supplier_options": supplier_options,
+                "supplier_select_idx": 0,
+                "classcat": found_row.get("classcat", ""),
+                "departmentcat": found_row.get("departmentcat", ""),
+                "sectioncat": found_row.get("sectioncat", ""),
+                "familycat": found_row.get("familycat", ""),
+            })
+            st.success(f"Added: {found_row['itemnameenglish']}")
+            st.rerun()
         else:
             st.info(f"Item '{found_row['itemnameenglish']}' already added.")
 
@@ -119,7 +130,6 @@ def manual_po_page():
                     f"<div style='font-size:14px;color:#086b37;margin-bottom:3px;'>Barcode: <code>{po['barcode']}</code></div>",
                     unsafe_allow_html=True,
                 )
-                # Tags row
                 tags = [
                     f"<span style='background:#fff3e0;color:#C61C1C;border-radius:7px;padding:3px 12px 3px 12px;font-size:13.5px;margin-right:6px;'><b>Class:</b> {po.get('classcat','')}</span>",
                     f"<span style='background:#e3f2fd;color:#004CBB;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Department:</b> {po.get('departmentcat','')}</span>",
@@ -128,11 +138,26 @@ def manual_po_page():
                 ]
                 st.markdown(f"<div style='margin-bottom:4px;'>{''.join(tags)}</div>", unsafe_allow_html=True)
                 # Edit controls row
-                c1, c2, c3, c4 = st.columns([2,2,2,1])
+                c1, c2, c3, c4, c5 = st.columns([2,2,2,2,1])
                 qty = c1.number_input("Qty", min_value=1, value=po["quantity"], step=1, key=f"qty_{idx}")
                 price = c2.number_input("Est. Price", min_value=0.0, value=po["estimated_price"], step=0.01, key=f"price_{idx}")
-                c3.markdown(f"**Supplier:** {po['suppliername']}")
-                remove = c4.button("Remove", key=f"rm_{idx}")
+
+                # --- Supplier picker ---
+                supplier_options = po.get("supplier_options", [])
+                supplier_names = [n for _, n in supplier_options] if supplier_options else [po["suppliername"]]
+                current_idx = po.get("supplier_select_idx", 0)
+                supplier_idx = c3.selectbox(
+                    "Supplier", supplier_names, index=current_idx, key=f"sup_{idx}"
+                )
+                # When supplier changed, update supplierid/name in state
+                if supplier_idx != current_idx:
+                    sel_supplierid, sel_suppliername = supplier_options[supplier_idx]
+                    po["supplierid"] = sel_supplierid
+                    po["suppliername"] = sel_suppliername
+                    po["supplier_select_idx"] = supplier_idx
+
+                c4.markdown(f"**Current:** {po['suppliername']}")
+                remove = c5.button("Remove", key=f"rm_{idx}")
                 po["quantity"] = qty
                 po["estimated_price"] = price
                 if remove:
