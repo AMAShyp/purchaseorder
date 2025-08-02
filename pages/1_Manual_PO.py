@@ -3,6 +3,12 @@ import pandas as pd
 import datetime
 from PO.po_handler import POHandler
 
+try:
+    from streamlit_qrcode_scanner import qrcode_scanner
+    QR_AVAILABLE = True
+except ImportError:
+    QR_AVAILABLE = False
+
 st.set_page_config(page_title="Manual Purchase Orders", layout="wide")
 po_handler = POHandler()
 BARCODE_COLUMN = "barcode"
@@ -10,7 +16,6 @@ BARCODE_COLUMN = "barcode"
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
 
-    # --- Session state ---
     if "po_items" not in st.session_state:
         st.session_state["po_items"] = []
     if "po_feedback" not in st.session_state:
@@ -18,7 +23,6 @@ def manual_po_page():
     if "latest_po_results" not in st.session_state:
         st.session_state["latest_po_results"] = []
 
-    # --- Data ---
     items_df = po_handler.fetch_data("SELECT * FROM item")
     mapping_df = po_handler.get_item_supplier_mapping()
     suppliers_df = po_handler.get_suppliers()
@@ -33,46 +37,67 @@ def manual_po_page():
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
 
-    # --- Feedback ---
     if st.session_state["po_feedback"]:
         st.success(st.session_state["po_feedback"])
         st.session_state["po_feedback"] = ""
 
-    # --- Barcode input ---
-    with st.form("add_barcode_form", clear_on_submit=True):
-        bc_col1, bc_col2 = st.columns([5,1])
-        barcode_in = bc_col1.text_input(
-            "Scan/Enter Barcode",
-            value="",
-            label_visibility="visible",
-            autocomplete="off",
-            key="barcode_input"
-        )
-        add_click = bc_col2.form_submit_button("Add Item")
-        if add_click and barcode_in:
-            code = str(barcode_in).strip()
-            found_row = barcode_to_item.get(code, None)
-            if found_row is None and code.lstrip('0') != code:
-                found_row = barcode_to_item.get(code.lstrip('0'), None)
-            if found_row is None:
-                st.warning(f"Barcode '{code}' not found.")
-            else:
-                item_id = int(found_row["itemid"])
-                if not any(po["item_id"] == item_id for po in st.session_state["po_items"]):
-                    mapping = mapping_df[mapping_df["itemid"] == item_id]
-                    if not mapping.empty:
-                        supplierid = int(mapping.iloc[0]["supplierid"])
-                        suppliername = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"].values[0]
-                        st.session_state["po_items"].append({
-                            "item_id": item_id,
-                            "itemname": found_row["itemnameenglish"],
-                            "barcode": code,
-                            "quantity": 1,
-                            "estimated_price": 0.0,
-                            "supplierid": supplierid,
-                            "suppliername": suppliername
-                        })
-            st.rerun()
+    tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
+
+    # --- Unified handler for adding items by barcode ---
+    def add_item_by_barcode(barcode):
+        code = str(barcode).strip()
+        if not code:
+            return
+        found_row = barcode_to_item.get(code, None)
+        if found_row is None and code.lstrip('0') != code:
+            found_row = barcode_to_item.get(code.lstrip('0'), None)
+        if found_row is None:
+            st.warning(f"Barcode '{code}' not found.")
+            return
+        item_id = int(found_row["itemid"])
+        if not any(po["item_id"] == item_id for po in st.session_state["po_items"]):
+            mapping = mapping_df[mapping_df["itemid"] == item_id]
+            if not mapping.empty:
+                supplierid = int(mapping.iloc[0]["supplierid"])
+                suppliername = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"].values[0]
+                st.session_state["po_items"].append({
+                    "item_id": item_id,
+                    "itemname": found_row["itemnameenglish"],
+                    "barcode": code,
+                    "quantity": 1,
+                    "estimated_price": 0.0,
+                    "supplierid": supplierid,
+                    "suppliername": suppliername
+                })
+                st.success(f"Added: {found_row['itemnameenglish']}")
+                st.rerun()
+        else:
+            st.info(f"Item '{found_row['itemnameenglish']}' already added.")
+
+    with tab1:
+        st.markdown("**Scan barcode with your webcam**")
+        barcode_camera = ""
+        if QR_AVAILABLE:
+            barcode_camera = qrcode_scanner(key="barcode_camera") or ""
+            if barcode_camera:
+                add_item_by_barcode(barcode_camera)
+        else:
+            st.warning("Camera barcode scanning requires `streamlit-qrcode-scanner`. Please install it or use the next tab.")
+
+    with tab2:
+        st.markdown("**Or enter barcode manually**")
+        with st.form("add_barcode_form", clear_on_submit=True):
+            bc_col1, bc_col2 = st.columns([5,1])
+            barcode_in = bc_col1.text_input(
+                "Scan/Enter Barcode",
+                value="",
+                label_visibility="visible",
+                autocomplete="off",
+                key="barcode_input"
+            )
+            add_click = bc_col2.form_submit_button("Add Item")
+            if add_click and barcode_in:
+                add_item_by_barcode(barcode_in)
 
     # --- Card-style items panel ---
     st.write("### Current Items")
@@ -110,7 +135,6 @@ def manual_po_page():
         if not po_items:
             st.error("Please add at least one item before generating purchase orders.")
         else:
-            # Group by supplier
             po_by_supplier = {}
             for po in po_items:
                 supid = po["supplierid"]
