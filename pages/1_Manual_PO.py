@@ -9,9 +9,117 @@ try:
 except ImportError:
     QR_AVAILABLE = False
 
-st.set_page_config(page_title="Manual Purchase Orders", layout="wide")
-po_handler = POHandler()
+try:
+    from shelf_map.shelf_map_handler import ShelfMapHandler
+except ImportError:
+    ShelfMapHandler = None
+
+try:
+    from streamlit_plotly_events import plotly_events
+    PLOTLY_EVENTS_AVAILABLE = True
+except ImportError:
+    PLOTLY_EVENTS_AVAILABLE = False
+
+import plotly.graph_objects as go
+
 BARCODE_COLUMN = "barcode"
+
+# --- Map/filter config (adjust as needed) ---
+LOCID_CSV_PATH = "assets/locid_list.csv"
+locid_df = pd.read_csv(LOCID_CSV_PATH)
+FILTERED_LOCIDS = set(str(l).strip() for l in locid_df["locid"].dropna().unique())
+
+def map_with_highlights_and_textlabels(locs, highlight_locs, allowed_locids):
+    import math
+    shapes = []
+    polygons = []
+    label_x = []
+    label_y = []
+    label_text = []
+    trace_x = []
+    trace_y = []
+    trace_text = []
+    min_x = min_y = float("inf")
+    max_x = max_y = float("-inf")
+    any_loc = False
+
+    for row in locs:
+        if str(row["locid"]) not in allowed_locids:
+            continue
+        x, y, w, h = map(float, (row["x_pct"], row["y_pct"], row["w_pct"], row["h_pct"]))
+        deg = float(row.get("rotation_deg") or 0)
+        cx, cy = x + w/2, 1 - (y + h/2)
+        y_draw = 1 - y - h
+        min_x = min(min_x, x)
+        min_y = min(min_y, y_draw)
+        max_x = max(max_x, x + w)
+        max_y = max(max_y, y_draw + h)
+        any_loc = True
+        is_hi = row["locid"] in highlight_locs
+        fill = "rgba(220,53,69,0.34)" if is_hi else "rgba(180,180,180,0.11)"
+        line = dict(width=2 if is_hi else 1.2, color="#d8000c" if is_hi else "#888")
+
+        if deg == 0:
+            shapes.append(dict(type="rect", x0=x, y0=y_draw, x1=x+w, y1=y_draw+h, line=line, fillcolor=fill))
+        else:
+            rad = math.radians(deg)
+            cos, sin = math.cos(rad), math.sin(rad)
+            pts = [(-w/2, -h/2), (w/2, -h/2), (w/2, h/2), (-w/2, h/2)]
+            abs_pts = [(cx + u * cos - v * sin, cy + u * sin + v * cos) for u, v in pts]
+            min_x = min([min_x] + [p[0] for p in abs_pts])
+            min_y = min([min_y] + [p[1] for p in abs_pts])
+            max_x = max([max_x] + [p[0] for p in abs_pts])
+            max_y = max([max_y] + [p[1] for p in abs_pts])
+            path = "M " + " L ".join(f"{x_},{y_}" for x_, y_ in abs_pts) + " Z"
+            shapes.append(dict(type="path", path=path, line=line, fillcolor=fill))
+
+        trace_x.append(cx)
+        trace_y.append(cy)
+        trace_text.append(row.get("label", row["locid"]))
+
+        label_x.append(cx)
+        label_y.append(cy)
+        label_text.append(row.get("label", row["locid"]))
+
+        polygons.append({
+            "locid": row["locid"],
+            "center": (cx, cy)
+        })
+
+        if is_hi:
+            r = max(w, h) * 0.5
+            shapes.append(dict(type="circle",xref="x",yref="y",
+                               x0=cx-r,x1=cx+r,y0=cy-r,y1=cy+r,
+                               line=dict(color="#d8000c",width=2,dash="dot")))
+
+    fig = go.Figure()
+    fig.update_layout(shapes=shapes, height=360, margin=dict(l=12,r=12,t=10,b=5),
+                      plot_bgcolor="#f8f9fa")
+    if any_loc:
+        expand_x = (max_x - min_x) * 0.07
+        expand_y = (max_y - min_y) * 0.07
+        fig.update_xaxes(visible=False, range=[min_x - expand_x, max_x + expand_x], constrain="domain", fixedrange=True)
+        fig.update_yaxes(visible=False, range=[min_y - expand_y, max_y + expand_y], scaleanchor="x", scaleratio=1, fixedrange=True)
+    else:
+        fig.update_xaxes(visible=False, range=[0,1], constrain="domain", fixedrange=True)
+        fig.update_yaxes(visible=False, range=[0,1], scaleanchor="x", scaleratio=1, fixedrange=True)
+    fig.add_scatter(
+        x=trace_x, y=trace_y, text=trace_text,
+        mode="markers",
+        marker=dict(size=16, opacity=0.3, color="rgba(0,0,0,0.01)"),
+        hoverinfo="text",
+        name="Shelves"
+    )
+    fig.add_scatter(
+        x=label_x, y=label_y, text=label_text,
+        mode="text",
+        textposition="middle center",
+        textfont=dict(size=13, color="#19375a", family="monospace"),
+        showlegend=False,
+        hoverinfo="none",
+        name="LocID Labels"
+    )
+    return fig, polygons, trace_text
 
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
@@ -26,6 +134,7 @@ def manual_po_page():
     items_df = po_handler.fetch_data("SELECT * FROM item")
     mapping_df = po_handler.get_item_supplier_mapping()
     suppliers_df = po_handler.get_suppliers()
+    shelf_map = ShelfMapHandler().get_locations() if ShelfMapHandler else []
 
     if BARCODE_COLUMN not in items_df.columns:
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
@@ -54,15 +163,12 @@ def manual_po_page():
             st.warning(f"Barcode '{code}' not found.")
             return
         item_id = int(found_row["itemid"])
-        # Suppliers for this item:
         suppliers_for_item = mapping_df[mapping_df["itemid"] == item_id]["supplierid"].tolist()
         if not suppliers_for_item:
             st.warning(f"No supplier found for item '{found_row['itemnameenglish']}'.")
             return
-        # Default to the first supplier
         supplierid = int(suppliers_for_item[0])
         suppliername = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"].values[0]
-        # Only add if not present (same item AND same supplier)
         already_added = any(
             po["item_id"] == item_id and po["supplierid"] == supplierid
             for po in st.session_state["po_items"]
@@ -137,21 +243,19 @@ def manual_po_page():
                 qty = c1.number_input("Qty", min_value=1, value=po["quantity"], step=1, key=f"qty_{idx}")
                 price = c2.number_input("Est. Price", min_value=0.0, value=po["estimated_price"], step=0.01, key=f"price_{idx}")
 
-                # Supplier dropdown: always present, but disables if only 1 option
+                # Supplier dropdown
                 supplier_options = []
                 supplier_id_to_name = {}
                 for sid in po["possible_suppliers"]:
                     sname = suppliers_df[suppliers_df["supplierid"] == sid]["suppliername"].values[0]
                     supplier_options.append(sname)
                     supplier_id_to_name[sid] = sname
-                # Get selected idx
                 if len(supplier_options) > 1:
                     selected_supplier_name = c3.selectbox(
                         "Supplier", supplier_options,
                         index=supplier_options.index(po["suppliername"]),
                         key=f"supplier_{idx}"
                     )
-                    # Update supplierid/name if changed
                     selected_sid = [sid for sid, name in supplier_id_to_name.items() if name == selected_supplier_name][0]
                     po["supplierid"] = selected_sid
                     po["suppliername"] = selected_supplier_name
@@ -161,8 +265,18 @@ def manual_po_page():
                 remove = c5.button("Remove", key=f"rm_{idx}")
                 po["quantity"] = qty
                 po["estimated_price"] = price
-                if remove:
-                    to_remove.append(idx)
+
+                # --- Shelf map for the item ---
+                if ShelfMapHandler:
+                    itemid = po["item_id"]
+                    shelf_entries = mapping_df[(mapping_df["itemid"] == itemid)]
+                    # Use your real shelf logic to get locations for this item
+                    item_locs = set(str(locid) for locid in shelf_entries["locid"].unique()) if "locid" in shelf_entries else set()
+                    highlights = [loc for loc in item_locs if loc in FILTERED_LOCIDS]
+                    if shelf_map:
+                        st.markdown("<div style='margin-top:6px;'><b>🗺️ Shelf Map (highlighted if available):</b></div>", unsafe_allow_html=True)
+                        fig, polygons, _ = map_with_highlights_and_textlabels(shelf_map, highlights, FILTERED_LOCIDS)
+                        st.plotly_chart(fig, use_container_width=True)
                 st.markdown("---")
         if to_remove:
             for idx in reversed(to_remove):
