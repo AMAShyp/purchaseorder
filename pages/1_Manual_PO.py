@@ -38,11 +38,18 @@ def manual_po_page():
         st.success(st.session_state["po_feedback"])
         st.session_state["po_feedback"] = ""
 
-    # --- Barcode input (always visible) ---
+    # --- Barcode input (always visible, stateless, always empty after scan) ---
     bc_col1, bc_col2 = st.columns([5,1])
-    barcode_in = bc_col1.text_input("Scan/Enter Barcode", key="barcode_input", label_visibility="visible", value="", autocomplete="off")
+    barcode_in = bc_col1.text_input(
+        "Scan/Enter Barcode",
+        value="",
+        label_visibility="visible",
+        autocomplete="off",
+        key=f"barcode_input_{len(st.session_state['po_items'])}"
+    )
     add_click = bc_col2.button("Add Item")
-    if add_click or (barcode_in and st.session_state.get("last_barcode", None) != barcode_in):
+
+    if add_click or barcode_in:
         code = str(barcode_in).strip()
         found_row = barcode_to_item.get(code, None)
         if found_row is None and code.lstrip('0') != code:
@@ -65,8 +72,6 @@ def manual_po_page():
                         "supplierid": supplierid,
                         "suppliername": suppliername
                     })
-        st.session_state["barcode_input"] = ""
-        st.session_state["last_barcode"] = code
         st.rerun()
 
     # --- Card-style items panel ---
