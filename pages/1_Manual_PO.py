@@ -18,8 +18,7 @@ def manual_po_page():
         st.session_state["po_feedback"] = ""
 
     # --- Data ---
-    # Make sure this pulls from table 'item' not 'items'
-    items_df = po_handler.fetch_data("SELECT * FROM item")  # direct table name!
+    items_df = po_handler.fetch_data("SELECT * FROM item")  # from 'item' table
     mapping_df = po_handler.get_item_supplier_mapping()
     suppliers_df = po_handler.get_suppliers()
 
@@ -53,7 +52,6 @@ def manual_po_page():
         add_click = bc_col2.form_submit_button("Add Item")
         if add_click or barcode_in:
             code = str(barcode_in).strip()
-            # --- DEBUG: print what is being matched ---
             st.write(f"[DEBUG] User entered barcode: '{code}'")
             st.write(f"[DEBUG] Available barcode keys (first 10): {list(barcode_to_item.keys())[:10]}")
             found_row = barcode_to_item.get(code, None)
@@ -81,7 +79,7 @@ def manual_po_page():
                             "supplierid": supplierid,
                             "suppliername": suppliername
                         })
-            st.experimental_rerun()
+            st.rerun()  # <---- use st.rerun() here!
 
     # --- Card-style items panel ---
     st.write("### Current Items")
@@ -106,7 +104,7 @@ def manual_po_page():
         for idx in reversed(to_remove):
             st.session_state["po_items"].pop(idx)
         if to_remove:
-            st.experimental_rerun()
+            st.rerun()  # <---- use st.rerun() here!
 
     # --- Delivery date/time ---
     st.write("### 📅 Delivery Info")
@@ -153,7 +151,7 @@ def manual_po_page():
                 st.session_state["po_feedback"] = "❌ Failed to generate any purchase order."
             st.session_state["po_items"] = []
             st.session_state["latest_po_results"] = results
-            st.experimental_rerun()
+            st.rerun()
 
     # --- Result tab (second page) ---
     if "latest_po_results" not in st.session_state:
