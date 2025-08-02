@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import plotly.graph_objects as go
+
 from PO.po_handler import POHandler
 
 try:
@@ -14,17 +16,9 @@ try:
 except ImportError:
     ShelfMapHandler = None
 
-try:
-    from streamlit_plotly_events import plotly_events
-    PLOTLY_EVENTS_AVAILABLE = True
-except ImportError:
-    PLOTLY_EVENTS_AVAILABLE = False
-
-import plotly.graph_objects as go
-
 BARCODE_COLUMN = "barcode"
 
-# --- Map/filter config (adjust as needed) ---
+# --- LOCID filter setup ---
 LOCID_CSV_PATH = "assets/locid_list.csv"
 locid_df = pd.read_csv(LOCID_CSV_PATH)
 FILTERED_LOCIDS = set(str(l).strip() for l in locid_df["locid"].dropna().unique())
@@ -124,17 +118,19 @@ def map_with_highlights_and_textlabels(locs, highlight_locs, allowed_locids):
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
 
+    # --- Handler and data
+    po_handler = POHandler()
+    shelf_map = ShelfMapHandler().get_locations() if ShelfMapHandler else []
+    items_df = po_handler.fetch_data("SELECT * FROM item")
+    mapping_df = po_handler.get_item_supplier_mapping()
+    suppliers_df = po_handler.get_suppliers()
+
     if "po_items" not in st.session_state:
         st.session_state["po_items"] = []
     if "po_feedback" not in st.session_state:
         st.session_state["po_feedback"] = ""
     if "latest_po_results" not in st.session_state:
         st.session_state["latest_po_results"] = []
-
-    items_df = po_handler.fetch_data("SELECT * FROM item")
-    mapping_df = po_handler.get_item_supplier_mapping()
-    suppliers_df = po_handler.get_suppliers()
-    shelf_map = ShelfMapHandler().get_locations() if ShelfMapHandler else []
 
     if BARCODE_COLUMN not in items_df.columns:
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
@@ -243,7 +239,6 @@ def manual_po_page():
                 qty = c1.number_input("Qty", min_value=1, value=po["quantity"], step=1, key=f"qty_{idx}")
                 price = c2.number_input("Est. Price", min_value=0.0, value=po["estimated_price"], step=0.01, key=f"price_{idx}")
 
-                # Supplier dropdown
                 supplier_options = []
                 supplier_id_to_name = {}
                 for sid in po["possible_suppliers"]:
@@ -267,16 +262,18 @@ def manual_po_page():
                 po["estimated_price"] = price
 
                 # --- Shelf map for the item ---
-                if ShelfMapHandler:
+                if shelf_map:
+                    # Find shelf locations for this item (locid must match FILTERED_LOCIDS)
                     itemid = po["item_id"]
-                    shelf_entries = mapping_df[(mapping_df["itemid"] == itemid)]
-                    # Use your real shelf logic to get locations for this item
-                    item_locs = set(str(locid) for locid in shelf_entries["locid"].unique()) if "locid" in shelf_entries else set()
-                    highlights = [loc for loc in item_locs if loc in FILTERED_LOCIDS]
-                    if shelf_map:
-                        st.markdown("<div style='margin-top:6px;'><b>🗺️ Shelf Map (highlighted if available):</b></div>", unsafe_allow_html=True)
-                        fig, polygons, _ = map_with_highlights_and_textlabels(shelf_map, highlights, FILTERED_LOCIDS)
-                        st.plotly_chart(fig, use_container_width=True)
+                    item_shelf_locs = [row for row in shelf_map if str(row.get("itemid", "")) == str(itemid) or "itemid" not in row]
+                    # fallback: show all, but highlight by locids in FILTERED_LOCIDS
+                    highlights = []
+                    # Try mapping_df: get all locids this item is on
+                    if "locid" in mapping_df.columns:
+                        highlights = [str(loc) for loc in mapping_df[(mapping_df["itemid"] == itemid) & (mapping_df["locid"].isin(FILTERED_LOCIDS))]["locid"].unique()]
+                    st.markdown("<div style='margin-top:6px;'><b>🗺️ Shelf Map (highlighted if available):</b></div>", unsafe_allow_html=True)
+                    fig, polygons, _ = map_with_highlights_and_textlabels(shelf_map, highlights, FILTERED_LOCIDS)
+                    st.plotly_chart(fig, use_container_width=True)
                 st.markdown("---")
         if to_remove:
             for idx in reversed(to_remove):
