@@ -18,7 +18,8 @@ def manual_po_page():
         st.session_state["po_feedback"] = ""
 
     # --- Data ---
-    items_df = po_handler.get_items()
+    # Make sure this pulls from table 'item' not 'items'
+    items_df = po_handler.fetch_data("SELECT * FROM item")  # direct table name!
     mapping_df = po_handler.get_item_supplier_mapping()
     suppliers_df = po_handler.get_suppliers()
 
