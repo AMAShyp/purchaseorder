@@ -38,41 +38,41 @@ def manual_po_page():
         st.success(st.session_state["po_feedback"])
         st.session_state["po_feedback"] = ""
 
-    # --- Barcode input (always visible, stateless, always empty after scan) ---
-    bc_col1, bc_col2 = st.columns([5,1])
-    barcode_in = bc_col1.text_input(
-        "Scan/Enter Barcode",
-        value="",
-        label_visibility="visible",
-        autocomplete="off",
-        key=f"barcode_input_{len(st.session_state['po_items'])}"
-    )
-    add_click = bc_col2.button("Add Item")
-
-    if add_click or barcode_in:
-        code = str(barcode_in).strip()
-        found_row = barcode_to_item.get(code, None)
-        if found_row is None and code.lstrip('0') != code:
-            found_row = barcode_to_item.get(code.lstrip('0'), None)
-        if found_row is None:
-            st.warning(f"Barcode '{code}' not found.")
-        else:
-            item_id = int(found_row["itemid"])
-            if not any(po["item_id"] == item_id for po in st.session_state["po_items"]):
-                mapping = mapping_df[mapping_df["itemid"] == item_id]
-                if not mapping.empty:
-                    supplierid = int(mapping.iloc[0]["supplierid"])
-                    suppliername = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"].values[0]
-                    st.session_state["po_items"].append({
-                        "item_id": item_id,
-                        "itemname": found_row["itemnameenglish"],
-                        "barcode": code,
-                        "quantity": 1,
-                        "estimated_price": 0.0,
-                        "supplierid": supplierid,
-                        "suppliername": suppliername
-                    })
-        st.rerun()
+    # --- Barcode input ---
+    with st.form("add_barcode_form", clear_on_submit=True):
+        bc_col1, bc_col2 = st.columns([5,1])
+        barcode_in = bc_col1.text_input(
+            "Scan/Enter Barcode",
+            value="",
+            label_visibility="visible",
+            autocomplete="off",
+            key="barcode_input"
+        )
+        add_click = bc_col2.form_submit_button("Add Item")
+        if add_click and barcode_in:
+            code = str(barcode_in).strip()
+            found_row = barcode_to_item.get(code, None)
+            if found_row is None and code.lstrip('0') != code:
+                found_row = barcode_to_item.get(code.lstrip('0'), None)
+            if found_row is None:
+                st.warning(f"Barcode '{code}' not found.")
+            else:
+                item_id = int(found_row["itemid"])
+                if not any(po["item_id"] == item_id for po in st.session_state["po_items"]):
+                    mapping = mapping_df[mapping_df["itemid"] == item_id]
+                    if not mapping.empty:
+                        supplierid = int(mapping.iloc[0]["supplierid"])
+                        suppliername = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"].values[0]
+                        st.session_state["po_items"].append({
+                            "item_id": item_id,
+                            "itemname": found_row["itemnameenglish"],
+                            "barcode": code,
+                            "quantity": 1,
+                            "estimated_price": 0.0,
+                            "supplierid": supplierid,
+                            "suppliername": suppliername
+                        })
+            st.rerun()
 
     # --- Card-style items panel ---
     st.write("### Current Items")
@@ -94,9 +94,9 @@ def manual_po_page():
                 po["estimated_price"] = price
                 if remove:
                     to_remove.append(idx)
-        for idx in reversed(to_remove):
-            st.session_state["po_items"].pop(idx)
         if to_remove:
+            for idx in reversed(to_remove):
+                st.session_state["po_items"].pop(idx)
             st.rerun()
 
     # --- Delivery date/time ---
