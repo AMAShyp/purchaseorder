@@ -22,9 +22,13 @@ def manual_po_page():
     mapping_df = po_handler.get_item_supplier_mapping()
     suppliers_df = po_handler.get_suppliers()
 
-    # --- Robustly check barcode column existence ---
+    # --- DEBUG: print columns and preview for troubleshooting ---
+    st.write("#### [DEBUG] Items DataFrame Columns:", list(items_df.columns))
+    st.write("#### [DEBUG] Items DataFrame Preview:")
+    st.dataframe(items_df.head(5))
+
     if BARCODE_COLUMN not in items_df.columns:
-        st.error(f"'{BARCODE_COLUMN}' column not found in your item table! Check your DB schema or po_handler.get_items().")
+        st.error(f"[DEBUG] '{BARCODE_COLUMN}' column NOT FOUND in your item table! Current columns: {list(items_df.columns)}")
         st.stop()
 
     barcode_to_item = {
@@ -32,6 +36,8 @@ def manual_po_page():
         for _, row in items_df.iterrows()
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
+
+    st.write(f"#### [DEBUG] Indexed {len(barcode_to_item)} barcodes from column '{BARCODE_COLUMN}'.")
 
     # --- Feedback ---
     if st.session_state["po_feedback"]:
@@ -46,11 +52,14 @@ def manual_po_page():
         add_click = bc_col2.form_submit_button("Add Item")
         if add_click or barcode_in:
             code = str(barcode_in).strip()
+            # --- DEBUG: print what is being matched ---
+            st.write(f"[DEBUG] User entered barcode: '{code}'")
+            st.write(f"[DEBUG] Available barcode keys (first 10): {list(barcode_to_item.keys())[:10]}")
             found_row = barcode_to_item.get(code, None)
             if found_row is None and code.lstrip('0') != code:
                 found_row = barcode_to_item.get(code.lstrip('0'), None)
             if found_row is None:
-                st.warning(f"Barcode '{code}' not found.")
+                st.warning(f"[DEBUG] Barcode '{code}' not found. Try leading zeroes or check DB data.")
             else:
                 item_id = int(found_row["itemid"])
                 if any(po["item_id"] == item_id for po in st.session_state["po_items"]):
