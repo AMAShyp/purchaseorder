@@ -22,6 +22,11 @@ def manual_po_page():
     mapping_df = po_handler.get_item_supplier_mapping()
     suppliers_df = po_handler.get_suppliers()
 
+    # --- Robustly check barcode column existence ---
+    if BARCODE_COLUMN not in items_df.columns:
+        st.error(f"'{BARCODE_COLUMN}' column not found in your item table! Check your DB schema or po_handler.get_items().")
+        st.stop()
+
     barcode_to_item = {
         str(row[BARCODE_COLUMN]).strip(): row
         for _, row in items_df.iterrows()
@@ -156,5 +161,4 @@ def manual_po_page():
                     st.markdown(row)
                 st.markdown("---")
 
-if __name__ == "__main__":
-    manual_po_page()
+manual_po_page()
