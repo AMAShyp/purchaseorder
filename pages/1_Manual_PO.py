@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import datetime
 import plotly.graph_objects as go
-
 from PO.po_handler import POHandler
 
 try:
@@ -115,10 +114,21 @@ def map_with_highlights_and_textlabels(locs, highlight_locs, allowed_locids):
     )
     return fig, polygons, trace_text
 
+def get_latest_estimated_price(po_handler, item_id):
+    """Returns latest nonzero estimated price for an item, or 0 if none."""
+    # Query purchaseorderitems table
+    price_df = po_handler.fetch_data("""
+        SELECT estimatedprice FROM purchaseorderitems
+        WHERE itemid = %s AND estimatedprice IS NOT NULL AND estimatedprice > 0
+        ORDER BY poitemid DESC LIMIT 1
+    """, (int(item_id),))
+    if not price_df.empty and pd.notnull(price_df.iloc[0]["estimatedprice"]):
+        return float(price_df.iloc[0]["estimatedprice"])
+    return 0.0
+
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
 
-    # --- Handler and data
     po_handler = POHandler()
     shelf_map = ShelfMapHandler().get_locations() if ShelfMapHandler else []
     items_df = po_handler.fetch_data("SELECT * FROM item")
@@ -169,13 +179,15 @@ def manual_po_page():
             po["item_id"] == item_id and po["supplierid"] == supplierid
             for po in st.session_state["po_items"]
         )
+        # Get latest estimated price from purchaseorderitems
+        est_price = get_latest_estimated_price(po_handler, item_id)
         if not already_added:
             st.session_state["po_items"].append({
                 "item_id": item_id,
                 "itemname": found_row["itemnameenglish"],
                 "barcode": code,
                 "quantity": 1,
-                "estimated_price": 0.0,
+                "estimated_price": est_price,
                 "supplierid": supplierid,
                 "suppliername": suppliername,
                 "possible_suppliers": suppliers_for_item,
@@ -263,12 +275,9 @@ def manual_po_page():
 
                 # --- Shelf map for the item ---
                 if shelf_map:
-                    # Find shelf locations for this item (locid must match FILTERED_LOCIDS)
                     itemid = po["item_id"]
                     item_shelf_locs = [row for row in shelf_map if str(row.get("itemid", "")) == str(itemid) or "itemid" not in row]
-                    # fallback: show all, but highlight by locids in FILTERED_LOCIDS
                     highlights = []
-                    # Try mapping_df: get all locids this item is on
                     if "locid" in mapping_df.columns:
                         highlights = [str(loc) for loc in mapping_df[(mapping_df["itemid"] == itemid) & (mapping_df["locid"].isin(FILTERED_LOCIDS))]["locid"].unique()]
                     st.markdown("<div style='margin-top:6px;'><b>🗺️ Shelf Map (highlighted if available):</b></div>", unsafe_allow_html=True)
