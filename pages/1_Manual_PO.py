@@ -34,14 +34,18 @@ def load_shelf_map():
     return []
 
 def map_with_highlights_and_textlabels(locs, highlight_locs, allowed_locids):
-    # ... (Unchanged plotting code)
-    # [keep as is]
-    # ...
+    # (unchanged)
+    # ... your plotting code ...
     return fig, polygons, trace_text
 
+@st.cache_resource
+def get_po_handler():
+    return POHandler()
+
 @st.cache_data
-def get_latest_estimated_price(po_handler, item_id):
-    """Returns latest nonzero estimated price for an item, or 0 if none."""
+def get_latest_estimated_price(item_id):
+    # Handler must be created inside the function or globally, NOT as a parameter!
+    po_handler = POHandler()
     price_df = po_handler.fetch_data("""
         SELECT estimatedprice FROM purchaseorderitems
         WHERE itemid = %s AND estimatedprice IS NOT NULL AND estimatedprice > 0
@@ -51,16 +55,12 @@ def get_latest_estimated_price(po_handler, item_id):
         return float(price_df.iloc[0]["estimatedprice"])
     return 0.0
 
-@st.cache_resource
-def get_po_handler():
-    return POHandler()
-
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
 
     po_handler = get_po_handler()
     shelf_map = load_shelf_map()
-    # Cache items, mapping, and suppliers for snappier UX!
+
     @st.cache_data
     def get_items():
         return po_handler.fetch_data("SELECT * FROM item")
@@ -119,7 +119,7 @@ def manual_po_page():
             po["item_id"] == item_id and po["supplierid"] == supplierid
             for po in st.session_state["po_items"]
         )
-        est_price = get_latest_estimated_price(po_handler, item_id)
+        est_price = get_latest_estimated_price(item_id)  # only item_id is passed
         if not already_added:
             st.session_state["po_items"].append({
                 "item_id": item_id,
