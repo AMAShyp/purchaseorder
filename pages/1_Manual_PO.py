@@ -311,17 +311,16 @@ def manual_po_page():
                 st.session_state["po_items"].pop(idx)
             st.rerun()
 
-    st.write("### 📅 Delivery Info")
-    date_col, time_col = st.columns(2)
-    delivery_date = date_col.date_input("Delivery Date", value=datetime.date.today(), min_value=datetime.date.today())
-    delivery_time = time_col.time_input("Delivery Time", value=datetime.time(9,0))
-
-    # --- Confirm button replaces PO generation ---
+    # --- Confirm button: use current datetime automatically ---
     if st.button("✅ Confirm"):
         if not po_items:
             st.error("Please add at least one item before confirming.")
         else:
-            st.session_state["confirm_feedback"] = "✅ Items confirmed! (You can now process them as needed.)"
+            current_datetime = datetime.datetime.now()
+            st.session_state["confirm_feedback"] = (
+                f"✅ Items confirmed! "
+                f"(Confirmed at {current_datetime.strftime('%Y-%m-%d %H:%M:%S')})"
+            )
             st.session_state["po_items"] = []
             st.rerun()
 
