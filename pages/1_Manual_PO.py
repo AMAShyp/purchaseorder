@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import plotly.graph_objects as go
+from PO.po_handler import POHandler
 
 try:
     from streamlit_qrcode_scanner import qrcode_scanner
@@ -9,98 +10,174 @@ try:
 except ImportError:
     QR_AVAILABLE = False
 
-# --- Dummy POHandler for this example (replace with your real handler as needed) ---
-class POHandler:
-    def fetch_data(self, query, params=None):
-        # Example: Use a static file or mockup
-        if "SELECT * FROM item" in query:
-            return pd.DataFrame([
-                {"itemid": 1, "itemnameenglish": "Milk", "barcode": "11111", "classcat": "Dairy", "departmentcat": "Food", "sectioncat": "Chilled", "familycat": "Milk"},
-                {"itemid": 2, "itemnameenglish": "Bread", "barcode": "22222", "classcat": "Bakery", "departmentcat": "Food", "sectioncat": "Fresh", "familycat": "Bread"},
-            ])
-        elif "SELECT supplierid, suppliername" in query:
-            return pd.DataFrame([
-                {"supplierid": 1, "suppliername": "Supplier A"},
-                {"supplierid": 2, "suppliername": "Supplier B"},
-            ])
-        return pd.DataFrame()
-
-    def get_item_supplier_mapping(self):
-        return pd.DataFrame([
-            {"itemid": 1, "supplierid": 1, "locid": "A1"},
-            {"itemid": 2, "supplierid": 2, "locid": "B1"},
-        ])
-
-    def get_suppliers(self):
-        return pd.DataFrame([
-            {"supplierid": 1, "suppliername": "Supplier A"},
-            {"supplierid": 2, "suppliername": "Supplier B"},
-        ])
-
-@st.cache_data
-def load_locids():
-    # In your real app, load from CSV as before
-    return pd.DataFrame([
-        {"locid": "A1"},
-        {"locid": "B1"},
-    ]), {"A1", "B1"}
-
-locid_df, FILTERED_LOCIDS = load_locids()
+try:
+    from shelf_map.shelf_map_handler import ShelfMapHandler
+except ImportError:
+    ShelfMapHandler = None
 
 BARCODE_COLUMN = "barcode"
 
-# --- Caching example (for database/file/shelf map loading) ---
 @st.cache_data
-def get_items(po_handler):
-    return po_handler.fetch_data("SELECT * FROM item")
+def load_locids():
+    LOCID_CSV_PATH = "assets/locid_list.csv"
+    df = pd.read_csv(LOCID_CSV_PATH)
+    filtered = set(str(l).strip() for l in df["locid"].dropna().unique())
+    return df, filtered
+
+locid_df, FILTERED_LOCIDS = load_locids()
 
 @st.cache_data
-def get_mapping(po_handler):
-    return po_handler.get_item_supplier_mapping()
+def load_shelf_map():
+    if ShelfMapHandler:
+        return ShelfMapHandler().get_locations()
+    return []
 
-@st.cache_data
-def get_suppliers(po_handler):
-    return po_handler.get_suppliers()
+@st.cache_resource
+def get_po_handler():
+    return POHandler()
 
 @st.cache_data
 def get_latest_estimated_price(item_id):
-    # In a real app, fetch from DB!
+    po_handler = POHandler()
+    price_df = po_handler.fetch_data("""
+        SELECT estimatedprice FROM purchaseorderitems
+        WHERE itemid = %s AND estimatedprice IS NOT NULL AND estimatedprice > 0
+        ORDER BY poitemid DESC LIMIT 1
+    """, (int(item_id),))
+    if not price_df.empty and pd.notnull(price_df.iloc[0]["estimatedprice"]):
+        return float(price_df.iloc[0]["estimatedprice"])
     return 0.0
 
-# --- (Optional) Dummy shelf map function (real app should replace) ---
 def map_with_highlights_and_textlabels(locs, highlight_locs, allowed_locids):
+    import math
+    shapes = []
+    polygons = []
+    label_x = []
+    label_y = []
+    label_text = []
+    trace_x = []
+    trace_y = []
+    trace_text = []
+    min_x = min_y = float("inf")
+    max_x = max_y = float("-inf")
+    any_loc = False
+
+    for row in locs:
+        if str(row["locid"]) not in allowed_locids:
+            continue
+        x, y, w, h = map(float, (row["x_pct"], row["y_pct"], row["w_pct"], row["h_pct"]))
+        deg = float(row.get("rotation_deg") or 0)
+        cx, cy = x + w/2, 1 - (y + h/2)
+        y_draw = 1 - y - h
+        min_x = min(min_x, x)
+        min_y = min(min_y, y_draw)
+        max_x = max(max_x, x + w)
+        max_y = max(max_y, y_draw + h)
+        any_loc = True
+        is_hi = row["locid"] in highlight_locs
+        fill = "rgba(220,53,69,0.34)" if is_hi else "rgba(180,180,180,0.11)"
+        line = dict(width=2 if is_hi else 1.2, color="#d8000c" if is_hi else "#888")
+
+        if deg == 0:
+            shapes.append(dict(type="rect", x0=x, y0=y_draw, x1=x+w, y1=y_draw+h, line=line, fillcolor=fill))
+        else:
+            rad = math.radians(deg)
+            cos, sin = math.cos(rad), math.sin(rad)
+            pts = [(-w/2, -h/2), (w/2, -h/2), (w/2, h/2), (-w/2, h/2)]
+            abs_pts = [(cx + u * cos - v * sin, cy + u * sin + v * cos) for u, v in pts]
+            min_x = min([min_x] + [p[0] for p in abs_pts])
+            min_y = min([min_y] + [p[1] for p in abs_pts])
+            max_x = max([max_x] + [p[0] for p in abs_pts])
+            max_y = max([max_y] + [p[1] for p in abs_pts])
+            path = "M " + " L ".join(f"{x_},{y_}" for x_, y_ in abs_pts) + " Z"
+            shapes.append(dict(type="path", path=path, line=line, fillcolor=fill))
+
+        trace_x.append(cx)
+        trace_y.append(cy)
+        trace_text.append(row.get("label", row["locid"]))
+
+        label_x.append(cx)
+        label_y.append(cy)
+        label_text.append(row.get("label", row["locid"]))
+
+        polygons.append({
+            "locid": row["locid"],
+            "center": (cx, cy)
+        })
+
+        if is_hi:
+            r = max(w, h) * 0.5
+            shapes.append(dict(type="circle",xref="x",yref="y",
+                               x0=cx-r,x1=cx+r,y0=cy-r,y1=cy+r,
+                               line=dict(color="#d8000c",width=2,dash="dot")))
+
     fig = go.Figure()
-    fig.update_layout(height=180, margin=dict(l=8, r=8, t=4, b=4), plot_bgcolor="#f8f9fa")
+    fig.update_layout(shapes=shapes, height=360, margin=dict(l=12,r=12,t=10,b=5),
+                      plot_bgcolor="#f8f9fa")
+    if any_loc:
+        expand_x = (max_x - min_x) * 0.07
+        expand_y = (max_y - min_y) * 0.07
+        fig.update_xaxes(visible=False, range=[min_x - expand_x, max_x + expand_x], constrain="domain", fixedrange=True)
+        fig.update_yaxes(visible=False, range=[min_y - expand_y, max_y + expand_y], scaleanchor="x", scaleratio=1, fixedrange=True)
+    else:
+        fig.update_xaxes(visible=False, range=[0,1], constrain="domain", fixedrange=True)
+        fig.update_yaxes(visible=False, range=[0,1], scaleanchor="x", scaleratio=1, fixedrange=True)
     fig.add_scatter(
-        x=[0.25, 0.75], y=[0.5, 0.5], text=["A1", "B1"],
+        x=trace_x, y=trace_y, text=trace_text,
+        mode="markers",
+        marker=dict(size=16, opacity=0.3, color="rgba(0,0,0,0.01)"),
+        hoverinfo="text",
+        name="Shelves"
+    )
+    fig.add_scatter(
+        x=label_x, y=label_y, text=label_text,
         mode="text",
         textposition="middle center",
-        textfont=dict(size=18, color="#19375a"),
+        textfont=dict(size=13, color="#19375a", family="monospace"),
         showlegend=False,
         hoverinfo="none",
         name="LocID Labels"
     )
-    return fig, [], ["A1", "B1"]
+    return fig, polygons, trace_text
 
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
 
-    po_handler = POHandler()
-    items_df = get_items(po_handler)
-    mapping_df = get_mapping(po_handler)
-    suppliers_df = get_suppliers(po_handler)
+    po_handler = get_po_handler()
+    shelf_map = load_shelf_map()
 
-    # --- Session state setup ---
+    @st.cache_data
+    def get_items():
+        return po_handler.fetch_data("SELECT * FROM item")
+    @st.cache_data
+    def get_mapping():
+        return po_handler.get_item_supplier_mapping()
+    @st.cache_data
+    def get_suppliers():
+        return po_handler.get_suppliers()
+
+    items_df = get_items()
+    mapping_df = get_mapping()
+    suppliers_df = get_suppliers()
+
     if "po_items" not in st.session_state:
         st.session_state["po_items"] = []
-    if "confirmed" not in st.session_state:
-        st.session_state["confirmed"] = False
+    if "confirm_feedback" not in st.session_state:
+        st.session_state["confirm_feedback"] = ""
+
+    if BARCODE_COLUMN not in items_df.columns:
+        st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
+        st.stop()
 
     barcode_to_item = {
         str(row[BARCODE_COLUMN]).strip(): row
         for _, row in items_df.iterrows()
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
+
+    if st.session_state["confirm_feedback"]:
+        st.success(st.session_state["confirm_feedback"])
+        st.session_state["confirm_feedback"] = ""
 
     tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
 
@@ -146,31 +223,30 @@ def manual_po_page():
         else:
             st.info(f"Item '{found_row['itemnameenglish']}' (Supplier: {suppliername}) already added.")
 
-    if not st.session_state["confirmed"]:
-        with tab1:
-            st.markdown("**Scan barcode with your webcam**")
-            barcode_camera = ""
-            if QR_AVAILABLE:
-                barcode_camera = qrcode_scanner(key="barcode_camera") or ""
-                if barcode_camera:
-                    add_item_by_barcode(barcode_camera)
-            else:
-                st.warning("Camera barcode scanning requires `streamlit-qrcode-scanner`. Please install it or use the next tab.")
+    with tab1:
+        st.markdown("**Scan barcode with your webcam**")
+        barcode_camera = ""
+        if QR_AVAILABLE:
+            barcode_camera = qrcode_scanner(key="barcode_camera") or ""
+            if barcode_camera:
+                add_item_by_barcode(barcode_camera)
+        else:
+            st.warning("Camera barcode scanning requires `streamlit-qrcode-scanner`. Please install it or use the next tab.")
 
-        with tab2:
-            st.markdown("**Or enter barcode manually**")
-            with st.form("add_barcode_form", clear_on_submit=True):
-                bc_col1, bc_col2 = st.columns([5,1])
-                barcode_in = bc_col1.text_input(
-                    "Scan/Enter Barcode",
-                    value="",
-                    label_visibility="visible",
-                    autocomplete="off",
-                    key="barcode_input"
-                )
-                add_click = bc_col2.form_submit_button("Add Item")
-                if add_click and barcode_in:
-                    add_item_by_barcode(barcode_in)
+    with tab2:
+        st.markdown("**Or enter barcode manually**")
+        with st.form("add_barcode_form", clear_on_submit=True):
+            bc_col1, bc_col2 = st.columns([5,1])
+            barcode_in = bc_col1.text_input(
+                "Scan/Enter Barcode",
+                value="",
+                label_visibility="visible",
+                autocomplete="off",
+                key="barcode_input"
+            )
+            add_click = bc_col2.form_submit_button("Add Item")
+            if add_click and barcode_in:
+                add_item_by_barcode(barcode_in)
 
     st.write("### Current Items")
     po_items = st.session_state["po_items"]
@@ -219,12 +295,17 @@ def manual_po_page():
                 po["quantity"] = qty
                 po["estimated_price"] = price
 
-                # --- Shelf map for the item (dummy) ---
-                fig, polygons, _ = map_with_highlights_and_textlabels([], [], [])
-                st.plotly_chart(fig, use_container_width=True)
+                # --- Shelf map for the item ---
+                if shelf_map:
+                    itemid = po["item_id"]
+                    item_shelf_locs = [row for row in shelf_map if str(row.get("itemid", "")) == str(itemid) or "itemid" not in row]
+                    highlights = []
+                    if "locid" in mapping_df.columns:
+                        highlights = [str(loc) for loc in mapping_df[(mapping_df["itemid"] == itemid) & (mapping_df["locid"].isin(FILTERED_LOCIDS))]["locid"].unique()]
+                    st.markdown("<div style='margin-top:6px;'><b>🗺️ Shelf Map (highlighted if available):</b></div>", unsafe_allow_html=True)
+                    fig, polygons, _ = map_with_highlights_and_textlabels(shelf_map, highlights, FILTERED_LOCIDS)
+                    st.plotly_chart(fig, use_container_width=True)
                 st.markdown("---")
-            if remove:
-                to_remove.append(idx)
         if to_remove:
             for idx in reversed(to_remove):
                 st.session_state["po_items"].pop(idx)
@@ -235,22 +316,13 @@ def manual_po_page():
     delivery_date = date_col.date_input("Delivery Date", value=datetime.date.today(), min_value=datetime.date.today())
     delivery_time = time_col.time_input("Delivery Time", value=datetime.time(9,0))
 
-    if not st.session_state["confirmed"]:
-        if st.button("✅ Confirm Purchase Order"):
-            st.session_state["confirmed"] = True
-            st.success("✅ Purchase Order confirmed! (No record saved, just demo confirmation.)")
-            st.rerun()
-    else:
-        st.header("✅ Purchase Order Confirmed")
-        st.info("You have confirmed the following order:")
-        for po in st.session_state["po_items"]:
-            st.markdown(
-                f"🛒 **{po['itemname']}** — Barcode: `{po['barcode']}` — Qty: {po['quantity']} — Est. Price: {po['estimated_price']}"
-            )
-        st.markdown(f"**Delivery Date:** {delivery_date}, **Time:** {delivery_time}")
-        if st.button("Start New Order"):
+    # --- Confirm button replaces PO generation ---
+    if st.button("✅ Confirm"):
+        if not po_items:
+            st.error("Please add at least one item before confirming.")
+        else:
+            st.session_state["confirm_feedback"] = "✅ Items confirmed! (You can now process them as needed.)"
             st.session_state["po_items"] = []
-            st.session_state["confirmed"] = False
             st.rerun()
 
 manual_po_page()
