@@ -103,8 +103,8 @@ def manual_po_page():
                 "item_id": item_id,
                 "itemname": found_row["itemnameenglish"],
                 "barcode": code,
-                "quantity": 1,
-                "estimated_price": est_price,
+                "quantity": 1,  # Default qty
+                "estimated_price": est_price,  # Default/fetched, not editable
                 "supplierid": supplierid,
                 "suppliername": suppliername,
                 "possible_suppliers": suppliers_for_item,
@@ -148,52 +148,21 @@ def manual_po_page():
     if not po_items:
         st.info("No items added yet. Scan a barcode to begin.")
     else:
-        to_remove = []
-        for idx, po in enumerate(po_items):
-            card = st.container()
-            with card:
-                st.markdown(
-                    f"<div style='font-size:18px;font-weight:700;color:#174e89;margin-bottom:2px;'>🛒 {po['itemname']}</div>"
-                    f"<div style='font-size:14px;color:#086b37;margin-bottom:3px;'>Barcode: <code>{po['barcode']}</code></div>",
-                    unsafe_allow_html=True,
-                )
-                tags = [
-                    f"<span style='background:#fff3e0;color:#C61C1C;border-radius:7px;padding:3px 12px 3px 12px;font-size:13.5px;margin-right:6px;'><b>Class:</b> {po.get('classcat','')}</span>",
-                    f"<span style='background:#e3f2fd;color:#004CBB;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Department:</b> {po.get('departmentcat','')}</span>",
-                    f"<span style='background:#eafaf1;color:#098A23;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Section:</b> {po.get('sectioncat','')}</span>",
-                    f"<span style='background:#fff8e1;color:#FF8800;border-radius:7px;padding:3px 12px;font-size:13.5px;'><b>Family:</b> {po.get('familycat','')}</span>",
-                ]
-                st.markdown(f"<div style='margin-bottom:4px;'>{''.join(tags)}</div>", unsafe_allow_html=True)
-                c1, c2, c3, c4, c5 = st.columns([2,2,3,2,1])
-                qty = c1.number_input("Qty", min_value=1, value=po["quantity"], step=1, key=f"qty_{idx}")
-                price = c2.number_input("Est. Price", min_value=0.0, value=po["estimated_price"], step=0.01, key=f"price_{idx}")
-
-                supplier_options = []
-                supplier_id_to_name = {}
-                for sid in po["possible_suppliers"]:
-                    sname = suppliers_df[suppliers_df["supplierid"] == sid]["suppliername"].values[0]
-                    supplier_options.append(sname)
-                    supplier_id_to_name[sid] = sname
-                if len(supplier_options) > 1:
-                    selected_supplier_name = c3.selectbox(
-                        "Supplier", supplier_options,
-                        index=supplier_options.index(po["suppliername"]),
-                        key=f"supplier_{idx}"
-                    )
-                    selected_sid = [sid for sid, name in supplier_id_to_name.items() if name == selected_supplier_name][0]
-                    po["supplierid"] = selected_sid
-                    po["suppliername"] = selected_supplier_name
-                else:
-                    c3.markdown(f"**Supplier:** {po['suppliername']}")
-
-                remove = c5.button("Remove", key=f"rm_{idx}")
-                po["quantity"] = qty
-                po["estimated_price"] = price
+        for po in po_items:
+            st.markdown(
+                f"<div style='font-size:18px;font-weight:700;color:#174e89;margin-bottom:2px;'>🛒 {po['itemname']}</div>"
+                f"<div style='font-size:14px;color:#086b37;margin-bottom:3px;'>Barcode: <code>{po['barcode']}</code></div>"
+                f"<div style='font-size:13px;color:#098A23;margin-bottom:2px;'>Supplier: {po['suppliername']}</div>",
+                unsafe_allow_html=True,
+            )
+            tags = [
+                f"<span style='background:#fff3e0;color:#C61C1C;border-radius:7px;padding:3px 12px 3px 12px;font-size:13.5px;margin-right:6px;'><b>Class:</b> {po.get('classcat','')}</span>",
+                f"<span style='background:#e3f2fd;color:#004CBB;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Department:</b> {po.get('departmentcat','')}</span>",
+                f"<span style='background:#eafaf1;color:#098A23;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Section:</b> {po.get('sectioncat','')}</span>",
+                f"<span style='background:#fff8e1;color:#FF8800;border-radius:7px;padding:3px 12px;font-size:13.5px;'><b>Family:</b> {po.get('familycat','')}</span>",
+            ]
+            st.markdown(f"<div style='margin-bottom:4px;'>{''.join(tags)}</div>", unsafe_allow_html=True)
             st.markdown("---")
-        if to_remove:
-            for idx in reversed(to_remove):
-                st.session_state["po_items"].pop(idx)
-            st.rerun()
 
     if st.button("✅ Confirm"):
         if not po_items:
