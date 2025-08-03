@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import numpy as np
-
 from PO.po_handler import POHandler
 
 try:
@@ -10,14 +8,6 @@ try:
     QR_AVAILABLE = True
 except ImportError:
     QR_AVAILABLE = False
-
-try:
-    from PIL import Image
-    import cv2
-    import pyzbar.pyzbar as pyzbar
-    CV2_PYZBAR_AVAILABLE = True
-except ImportError:
-    CV2_PYZBAR_AVAILABLE = False
 
 BARCODE_COLUMN = "barcode"
 
@@ -45,23 +35,6 @@ def get_latest_estimated_price(item_id):
     if not price_df.empty and pd.notnull(price_df.iloc[0]["estimatedprice"]):
         return float(price_df.iloc[0]["estimatedprice"])
     return 0.0
-
-# Enhanced barcode detection with image processing (brightness/contrast tweaks)
-def enhanced_decode_barcode(img: Image.Image):
-    if not CV2_PYZBAR_AVAILABLE:
-        return []
-    img = img.convert("L")  # Grayscale for best results
-    img_np = np.array(img)
-    candidates = []
-    for alpha in [1.0, 1.5, 2.0]:  # Contrast levels
-        for beta in [0, 15, 30]:   # Brightness shifts
-            proc = cv2.convertScaleAbs(img_np, alpha=alpha, beta=beta)
-            barcodes = pyzbar.decode(proc)
-            for b in barcodes:
-                data = b.data.decode("utf-8")
-                if data not in candidates:
-                    candidates.append(data)
-    return candidates
 
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
@@ -113,8 +86,9 @@ def manual_po_page():
         st.session_state["confirm_feedback"] = ""
 
     if not st.session_state["just_confirmed"]:
-        tab1, tab2, tab3 = st.tabs(["📷 Live Scan (Webcam)", "🖼️ Manual Camera/Upload", "⌨️ Type Barcode"])
+        tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
 
+        # Camera barcode scan logic
         def add_item_by_barcode(barcode):
             code = str(barcode).strip()
             if not code:
@@ -157,35 +131,27 @@ def manual_po_page():
             else:
                 st.info(f"Item '{found_row['itemnameenglish']}' (Supplier: {suppliername}) already added.")
 
-        # TAB 1: Live webcam scanner (quick/for QR and some barcodes)
         with tab1:
             st.markdown("**Scan barcode with your webcam**")
-            barcode_camera = ""
+            barcode_value = ""
             if QR_AVAILABLE:
-                barcode_camera = qrcode_scanner(key="barcode_camera") or ""
-                if barcode_camera:
-                    add_item_by_barcode(barcode_camera)
+                # Try scanning repeatedly for higher success, show last read
+                max_attempts = 3
+                for attempt in range(max_attempts):
+                    barcode_value = qrcode_scanner(
+                        key=f"barcode_camera_{attempt}",
+                        size=450,  # bigger scan area, if the lib supports it
+                        label="Place the barcode clearly in front of the camera and wait for auto-detection."
+                    ) or ""
+                    if barcode_value:
+                        add_item_by_barcode(barcode_value)
+                        break
+                if not barcode_value:
+                    st.info("If your barcode is not detected, adjust distance, angle, or lighting and try again.")
             else:
                 st.warning("Camera barcode scanning requires `streamlit-qrcode-scanner`. Please install it or use the next tab.")
 
-        # TAB 2: Manual capture/upload and enhanced barcode reading
         with tab2:
-            st.markdown("**Take a photo or upload an image of the barcode (supports JPG/PNG, better for tough barcodes)**")
-            img_file = st.file_uploader("Photo/Upload Barcode", type=["png", "jpg", "jpeg"])
-            if img_file and CV2_PYZBAR_AVAILABLE:
-                pil_img = Image.open(img_file)
-                st.image(pil_img, caption="Photo for barcode reading", use_column_width=True)
-                found_barcodes = enhanced_decode_barcode(pil_img)
-                if found_barcodes:
-                    st.success(f"Detected barcode(s): {', '.join(found_barcodes)}")
-                    # Optionally auto-add the first detected barcode:
-                    if st.button("Add First Detected Item", key="add_first_barcode_img"):
-                        add_item_by_barcode(found_barcodes[0])
-                else:
-                    st.warning("No barcode detected in the image. Try better lighting or re-capture.")
-
-        # TAB 3: Manual input
-        with tab3:
             st.markdown("**Or enter barcode manually**")
             with st.form("add_barcode_form", clear_on_submit=True):
                 bc_col1, bc_col2 = st.columns([5,1])
