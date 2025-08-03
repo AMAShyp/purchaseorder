@@ -59,6 +59,8 @@ def manual_po_page():
         st.session_state["po_items"] = []
     if "confirm_feedback" not in st.session_state:
         st.session_state["confirm_feedback"] = ""
+    if "latest_po_results" not in st.session_state:
+        st.session_state["latest_po_results"] = []
 
     if BARCODE_COLUMN not in items_df.columns:
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
@@ -104,7 +106,7 @@ def manual_po_page():
                 "itemname": found_row["itemnameenglish"],
                 "barcode": code,
                 "quantity": 1,  # Default qty
-                "estimated_price": est_price,  # Default/fetched, not editable
+                "estimated_price": est_price,
                 "supplierid": supplierid,
                 "suppliername": suppliername,
                 "possible_suppliers": suppliers_for_item,
@@ -178,11 +180,56 @@ def manual_po_page():
         if not po_items:
             st.error("Please add at least one item before confirming.")
         else:
-            current_datetime = datetime.datetime.now()
-            st.session_state["confirm_feedback"] = (
-                f"✅ Items confirmed! (Confirmed at {current_datetime.strftime('%Y-%m-%d %H:%M:%S')})"
-            )
+            # --- CREATE PURCHASE ORDERS IN DATABASE ---
+            po_by_supplier = {}
+            for po in po_items:
+                supid = po["supplierid"]
+                if supid not in po_by_supplier:
+                    po_by_supplier[supid] = {
+                        "suppliername": po["suppliername"],
+                        "items": []
+                    }
+                po_by_supplier[supid]["items"].append({
+                    "item_id": po["item_id"],
+                    "quantity": po["quantity"],
+                    "estimated_price": po["estimated_price"],
+                    "itemname": po["itemname"],
+                    "barcode": po["barcode"],
+                })
+            expected_dt = datetime.datetime.now()
+            created_by = st.session_state.get("user_email", "ManualUser")
+            results = []
+            any_success = False
+            for supid, supinfo in po_by_supplier.items():
+                try:
+                    poid = po_handler.create_manual_po(
+                        supid, expected_dt, supinfo["items"], created_by)
+                    results.append((supid, supinfo["suppliername"], poid, supinfo["items"]))
+                    any_success = True
+                except Exception as e:
+                    results.append((supid, supinfo["suppliername"], None, supinfo["items"]))
+            if any_success:
+                st.session_state["confirm_feedback"] = "✅ Purchase Orders created and confirmed!"
+            else:
+                st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
             st.session_state["po_items"] = []
+            st.session_state["latest_po_results"] = results
             st.rerun()
+
+    # Show the results (for last confirmation)
+    results = st.session_state.get("latest_po_results", [])
+    if results:
+        st.header("📄 Purchase Orders Created")
+        for supid, supname, poid, items in results:
+            with st.expander(f"Supplier: {supname} (PO ID: {poid if poid else 'FAILED'})"):
+                for po in items:
+                    row = (
+                        f"🛒 **{po['itemname']}**  \n"
+                        f"Barcode: `{po['barcode']}`  \n"
+                        f"Qty: {po['quantity']}  \n"
+                        f"Est. Price: {po['estimated_price'] if po['estimated_price'] else 'N/A'}"
+                    )
+                    st.markdown(row)
+                st.markdown("---")
 
 manual_po_page()
