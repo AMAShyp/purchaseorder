@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime
+import traceback
 from PO.po_handler import POHandler
 
 try:
@@ -63,6 +64,8 @@ def manual_po_page():
         st.session_state["clear_after_confirm"] = False
     if "just_confirmed" not in st.session_state:
         st.session_state["just_confirmed"] = False
+    if "debug_details" not in st.session_state:
+        st.session_state["debug_details"] = ""
 
     if BARCODE_COLUMN not in items_df.columns:
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
@@ -82,11 +85,14 @@ def manual_po_page():
     else:
         st.session_state["just_confirmed"] = False
 
-    # --- Show feedback message if present, then clear
+    # --- Show feedback and debug info if present, then clear
     if st.session_state["confirm_feedback"]:
-        # Show the feedback *above* everything else, and skip the item list if just confirmed
-        st.success(st.session_state["confirm_feedback"])
+        st.error(st.session_state["confirm_feedback"]) if st.session_state["confirm_feedback"].startswith("❌") else st.success(st.session_state["confirm_feedback"])
+        if st.session_state["debug_details"]:
+            with st.expander("Show Debug Info"):
+                st.markdown(st.session_state["debug_details"])
         st.session_state["confirm_feedback"] = ""
+        st.session_state["debug_details"] = ""
 
     # Only show the tabs and item list if NOT just confirmed
     if not st.session_state["just_confirmed"]:
@@ -191,6 +197,7 @@ def manual_po_page():
                 st.rerun()
 
         if st.button("✅ Confirm"):
+            debug_msgs = []
             if not st.session_state["po_items"]:
                 st.error("Please add at least one item before confirming.")
             else:
@@ -215,17 +222,31 @@ def manual_po_page():
                 any_success = False
                 for supid, supinfo in po_by_supplier.items():
                     try:
+                        debug_msgs.append(f"**Trying to create PO:**\n"
+                                         f"SupplierID: `{supid}`\n"
+                                         f"SupplierName: `{supinfo['suppliername']}`\n"
+                                         f"Items Table: `purchaseorderitems`\n"
+                                         f"Columns: {list(supinfo['items'][0].keys()) if supinfo['items'] else 'None'}\n"
+                                         f"Items Data:\n```{pd.DataFrame(supinfo['items'])}```")
                         poid = po_handler.create_manual_po(
                             supid, expected_dt, supinfo["items"], created_by,
                             approval="pending"
                         )
+                        debug_msgs.append(f"PO Creation: **SUCCESS** (poid={poid})\n---")
                         any_success = True
                     except Exception as e:
-                        pass
+                        debug_msgs.append(
+                            f"PO Creation: **FAILED**\n"
+                            f"Exception:\n```\n{traceback.format_exc()}\n```\n"
+                            f"SupplierID: `{supid}` | SupplierName: `{supinfo['suppliername']}`\n"
+                            f"Items Data:\n```{pd.DataFrame(supinfo['items'])}```"
+                        )
                 if any_success:
                     st.session_state["confirm_feedback"] = "✅ All items confirmed and purchase orders created!"
+                    st.session_state["debug_details"] = ""
                 else:
                     st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
+                    st.session_state["debug_details"] = "\n\n---\n\n".join(debug_msgs)
                 st.session_state["clear_after_confirm"] = True
                 st.rerun()
 
