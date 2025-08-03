@@ -11,6 +11,7 @@ class POHandler(DatabaseManager):
         """
         Returns a DataFrame with columns:
         - status, supplierid, supproposeddeliver, supproposedquantity, etc.
+        - Includes the new 'approval' columns for both PO and PO items.
         - Everything except statuses in the 'Archived' set is retrieved.
         """
         query = """
@@ -26,6 +27,7 @@ class POHandler(DatabaseManager):
             po.supproposeddeliver AS sup_proposeddeliver,
             po.SupplierNote AS suppliernote,
             po.OriginalPOID AS originalpoid,
+            po.Approval AS po_approval,      -- Added approval column
             s.SupplierName AS suppliername,
 
             poi.ItemID AS itemid,
@@ -34,6 +36,7 @@ class POHandler(DatabaseManager):
             poi.ReceivedQuantity AS receivedquantity,
             poi.SupProposedQuantity AS supproposedquantity,
             poi.SupProposedPrice AS supproposedprice,
+            poi.Approval AS item_approval,   -- Added approval column
 
             i.ItemNameEnglish AS itemnameenglish,
             i.ItemPicture AS itempicture
@@ -63,12 +66,14 @@ class POHandler(DatabaseManager):
             po.ActualDelivery AS actualdelivery,
             po.CreatedBy AS createdby,
             po.SupplierNote AS suppliernote,
+            po.Approval AS po_approval,     -- Added approval column
             s.SupplierName AS suppliername,
 
             poi.ItemID AS itemid,
             poi.OrderedQuantity AS orderedquantity,
             poi.EstimatedPrice AS estimatedprice,
             poi.ReceivedQuantity AS receivedquantity,
+            poi.Approval AS item_approval,  -- Added approval column
 
             i.ItemNameEnglish AS itemnameenglish,
             i.ItemPicture AS itempicture
@@ -97,7 +102,8 @@ class POHandler(DatabaseManager):
         """
         return self.fetch_data(query)
 
-    def create_manual_po(self, supplier_id, expected_delivery, items: list, created_by: str, original_poid=None):
+    def create_manual_po(self, supplier_id, expected_delivery, items: list, created_by: str, original_poid=None, approval='pending'):
+        """Create a manual purchase order and its line items, including the approval field."""
         supplier_id   = int(supplier_id) if supplier_id is not None else None
         original_poid = int(original_poid) if original_poid else None
         if pd.notnull(expected_delivery) and not isinstance(expected_delivery, datetime):
@@ -109,11 +115,11 @@ class POHandler(DatabaseManager):
                 cur.execute(
                     """
                     INSERT INTO purchaseorders
-                          (supplierid, expecteddelivery, createdby, originalpoid)
-                    VALUES (%s, %s, %s, %s)
+                          (supplierid, expecteddelivery, createdby, originalpoid, approval)
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING poid;
                     """,
-                    (supplier_id, expected_delivery, created_by, original_poid),
+                    (supplier_id, expected_delivery, created_by, original_poid, approval),
                 )
                 po_id = cur.fetchone()[0]
 
@@ -124,6 +130,7 @@ class POHandler(DatabaseManager):
                         int(it["quantity"]),
                         it.get("estimated_price"),
                         0,
+                        it.get("item_approval", "pending")  # new, allow for default or explicit
                     )
                     for it in items
                 ]
@@ -132,7 +139,7 @@ class POHandler(DatabaseManager):
                     cur,
                     """
                     INSERT INTO purchaseorderitems
-                          (poid, itemid, orderedquantity, estimatedprice, receivedquantity)
+                          (poid, itemid, orderedquantity, estimatedprice, receivedquantity, approval)
                     VALUES %s
                     """,
                     rows,
@@ -159,6 +166,29 @@ class POHandler(DatabaseManager):
         WHERE POID = %s AND ItemID = %s
         """
         self.execute_command(query, (received_quantity, poid, item_id))
+
+    # --- New: Approval column update methods ---
+    def update_po_approval(self, poid, approval):
+        poid = int(poid)
+        assert approval in ['pending', 'approved', 'rejected']
+        query = """
+        UPDATE PurchaseOrders
+        SET approval = %s
+        WHERE POID = %s
+        """
+        self.execute_command(query, (approval, poid))
+
+    def update_poitem_approval(self, poid, item_id, approval):
+        poid = int(poid)
+        item_id = int(item_id)
+        assert approval in ['pending', 'approved', 'rejected']
+        query = """
+        UPDATE PurchaseOrderItems
+        SET approval = %s
+        WHERE POID = %s AND ItemID = %s
+        """
+        self.execute_command(query, (approval, poid, item_id))
+    # ------------------------------------------
 
     def get_item_supplier_mapping(self):
         query = "SELECT ItemID AS itemid, SupplierID AS supplierid FROM ItemSupplier"
@@ -206,13 +236,16 @@ class POHandler(DatabaseManager):
                 else float(row.get("estimatedprice") or 0.0)
             )
 
+            item_approval = row.get("approval", "pending")
             new_items.append({
                 "item_id": int(row["itemid"]),
                 "quantity": qty,
                 "estimated_price": price,
+                "item_approval": item_approval
             })
 
         created_by = po_info.get("createdby", "Unknown")
+        po_approval = po_info.get("approval", "pending")
 
         new_poid = self.create_manual_po(
             supplier_id=supplier_id,
@@ -220,6 +253,7 @@ class POHandler(DatabaseManager):
             items=new_items,
             created_by=created_by,
             original_poid=proposed_po_id,
+            approval=po_approval
         )
 
         self.execute_command(
@@ -245,13 +279,15 @@ class POHandler(DatabaseManager):
         supplier_id = po_info.get("supplierid", None)
         if pd.notnull(supplier_id):
             supplier_id = int(supplier_id)
+        po_approval = po_info.get("approval", "pending")
 
         new_poid = self.create_manual_po(
             supplier_id=supplier_id,
             expected_delivery=new_delivery_date,
             items=new_items,
             created_by=user_email,
-            original_poid=proposed_po_id
+            original_poid=proposed_po_id,
+            approval=po_approval
         )
 
         self.execute_command(
