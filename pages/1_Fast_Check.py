@@ -55,13 +55,12 @@ def manual_po_page():
     mapping_df = get_mapping()
     suppliers_df = get_suppliers()
 
-    # --- Bulletproof session state setup ---
     if "po_items" not in st.session_state:
         st.session_state["po_items"] = []
     if "confirm_feedback" not in st.session_state:
         st.session_state["confirm_feedback"] = ""
-    if "just_confirmed" not in st.session_state:
-        st.session_state["just_confirmed"] = False
+    if "clear_after_confirm" not in st.session_state:
+        st.session_state["clear_after_confirm"] = False
 
     if BARCODE_COLUMN not in items_df.columns:
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
@@ -73,12 +72,12 @@ def manual_po_page():
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
 
-    # --- After rerun: clear items if just confirmed
-    if st.session_state["just_confirmed"]:
+    # --- Actually clear the items after rerun if flagged ---
+    if st.session_state["clear_after_confirm"]:
         st.session_state["po_items"] = []
-        st.session_state["just_confirmed"] = False
+        st.session_state["clear_after_confirm"] = False
 
-    # --- Show feedback if present, then clear
+    # --- Show feedback message if present, then clear
     if st.session_state["confirm_feedback"]:
         st.success(st.session_state["confirm_feedback"])
         st.session_state["confirm_feedback"] = ""
@@ -216,7 +215,7 @@ def manual_po_page():
                 st.session_state["confirm_feedback"] = "✅ All items confirmed and purchase orders created!"
             else:
                 st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
-            st.session_state["just_confirmed"] = True  # set flag to clear on rerun
-            st.rerun()
+            st.session_state["clear_after_confirm"] = True  # flag for next run
+            st.experimental_rerun()  # Instantly rerun to clear items
 
 manual_po_page()
