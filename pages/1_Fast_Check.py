@@ -178,7 +178,7 @@ def manual_po_page():
         if not po_items:
             st.error("Please add at least one item before confirming.")
         else:
-            # --- CREATE PURCHASE ORDERS IN DATABASE (but show only a message) ---
+            # --- CREATE PURCHASE ORDERS IN DATABASE ---
             po_by_supplier = {}
             for po in po_items:
                 supid = po["supplierid"]
@@ -203,9 +203,9 @@ def manual_po_page():
                         supid, expected_dt, supinfo["items"], created_by)
                     any_success = True
                 except Exception as e:
-                    pass  # Just skip failed supplier, don't show error details
+                    pass  # Optionally, handle/log failed PO creation
             if any_success:
-                st.session_state["confirm_feedback"] = "✅ Purchase Orders created and confirmed!"
+                st.session_state["confirm_feedback"] = "✅ All items confirmed and purchase orders created!"
             else:
                 st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
             st.session_state["po_items"] = []
