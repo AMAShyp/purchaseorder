@@ -77,7 +77,6 @@ def manual_po_page():
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
 
-    # --- Actually clear the items after rerun if flagged ---
     if st.session_state["clear_after_confirm"]:
         st.session_state["po_items"] = []
         st.session_state["clear_after_confirm"] = False
@@ -94,7 +93,6 @@ def manual_po_page():
         st.session_state["confirm_feedback"] = ""
         st.session_state["debug_details"] = ""
 
-    # Only show the tabs and item list if NOT just confirmed
     if not st.session_state["just_confirmed"]:
         tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
 
@@ -209,13 +207,13 @@ def manual_po_page():
                             "suppliername": po["suppliername"],
                             "items": []
                         }
+                    # DO NOT pass 'approval' column, just let DB set default
                     po_by_supplier[supid]["items"].append({
                         "item_id": po["item_id"],
                         "quantity": po["quantity"],
                         "estimated_price": po["estimated_price"],
                         "itemname": po["itemname"],
-                        "barcode": po["barcode"],
-                        "approval": "pending"
+                        "barcode": po["barcode"]
                     })
                 expected_dt = datetime.datetime.now()
                 created_by = st.session_state.get("user_email", "ManualUser")
@@ -228,9 +226,9 @@ def manual_po_page():
                                          f"Items Table: `purchaseorderitems`\n"
                                          f"Columns: {list(supinfo['items'][0].keys()) if supinfo['items'] else 'None'}\n"
                                          f"Items Data:\n```{pd.DataFrame(supinfo['items'])}```")
+                        # Do NOT pass 'approval'
                         poid = po_handler.create_manual_po(
-                            supid, expected_dt, supinfo["items"], created_by,
-                            approval="pending"
+                            supid, expected_dt, supinfo["items"], created_by
                         )
                         debug_msgs.append(f"PO Creation: **SUCCESS** (poid={poid})\n---")
                         any_success = True
