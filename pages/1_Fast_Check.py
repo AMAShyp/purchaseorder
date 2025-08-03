@@ -216,6 +216,6 @@ def manual_po_page():
             else:
                 st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
             st.session_state["clear_after_confirm"] = True  # flag for next run
-            st.experimental_rerun()  # Instantly rerun to clear items
+            st.rerun()  # Modern Streamlit API!
 
 manual_po_page()
