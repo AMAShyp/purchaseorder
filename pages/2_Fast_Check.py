@@ -148,21 +148,31 @@ def manual_po_page():
     if not po_items:
         st.info("No items added yet. Scan a barcode to begin.")
     else:
-        for po in po_items:
-            st.markdown(
-                f"<div style='font-size:18px;font-weight:700;color:#174e89;margin-bottom:2px;'>🛒 {po['itemname']}</div>"
-                f"<div style='font-size:14px;color:#086b37;margin-bottom:3px;'>Barcode: <code>{po['barcode']}</code></div>"
-                f"<div style='font-size:13px;color:#098A23;margin-bottom:2px;'>Supplier: {po['suppliername']}</div>",
-                unsafe_allow_html=True,
-            )
-            tags = [
-                f"<span style='background:#fff3e0;color:#C61C1C;border-radius:7px;padding:3px 12px 3px 12px;font-size:13.5px;margin-right:6px;'><b>Class:</b> {po.get('classcat','')}</span>",
-                f"<span style='background:#e3f2fd;color:#004CBB;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Department:</b> {po.get('departmentcat','')}</span>",
-                f"<span style='background:#eafaf1;color:#098A23;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Section:</b> {po.get('sectioncat','')}</span>",
-                f"<span style='background:#fff8e1;color:#FF8800;border-radius:7px;padding:3px 12px;font-size:13.5px;'><b>Family:</b> {po.get('familycat','')}</span>",
-            ]
-            st.markdown(f"<div style='margin-bottom:4px;'>{''.join(tags)}</div>", unsafe_allow_html=True)
+        to_remove = []
+        for idx, po in enumerate(po_items):
+            cols = st.columns([10, 1])
+            with cols[0]:
+                st.markdown(
+                    f"<div style='font-size:18px;font-weight:700;color:#174e89;margin-bottom:2px;'>🛒 {po['itemname']}</div>"
+                    f"<div style='font-size:14px;color:#086b37;margin-bottom:3px;'>Barcode: <code>{po['barcode']}</code></div>"
+                    f"<div style='font-size:13px;color:#098A23;margin-bottom:2px;'>Supplier: {po['suppliername']}</div>",
+                    unsafe_allow_html=True,
+                )
+                tags = [
+                    f"<span style='background:#fff3e0;color:#C61C1C;border-radius:7px;padding:3px 12px 3px 12px;font-size:13.5px;margin-right:6px;'><b>Class:</b> {po.get('classcat','')}</span>",
+                    f"<span style='background:#e3f2fd;color:#004CBB;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Department:</b> {po.get('departmentcat','')}</span>",
+                    f"<span style='background:#eafaf1;color:#098A23;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Section:</b> {po.get('sectioncat','')}</span>",
+                    f"<span style='background:#fff8e1;color:#FF8800;border-radius:7px;padding:3px 12px;font-size:13.5px;'><b>Family:</b> {po.get('familycat','')}</span>",
+                ]
+                st.markdown(f"<div style='margin-bottom:4px;'>{''.join(tags)}</div>", unsafe_allow_html=True)
+            with cols[1]:
+                if st.button("❌", key=f"rm_{idx}"):
+                    to_remove.append(idx)
             st.markdown("---")
+        if to_remove:
+            for idx in reversed(to_remove):
+                st.session_state["po_items"].pop(idx)
+            st.rerun()
 
     if st.button("✅ Confirm"):
         if not po_items:
