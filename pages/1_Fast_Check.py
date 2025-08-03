@@ -84,7 +84,6 @@ def manual_po_page():
     else:
         st.session_state["just_confirmed"] = False
 
-    # --- Show feedback and debug info if present, then clear
     if st.session_state["confirm_feedback"]:
         st.error(st.session_state["confirm_feedback"]) if st.session_state["confirm_feedback"].startswith("❌") else st.success(st.session_state["confirm_feedback"])
         if st.session_state["debug_details"]:
@@ -207,14 +206,16 @@ def manual_po_page():
                             "suppliername": po["suppliername"],
                             "items": []
                         }
-                    # DO NOT pass 'approval' column, just let DB set default
-                    po_by_supplier[supid]["items"].append({
+                    # Build item dict with only the expected columns (no approval!)
+                    item_dict = {
                         "item_id": po["item_id"],
                         "quantity": po["quantity"],
                         "estimated_price": po["estimated_price"],
                         "itemname": po["itemname"],
                         "barcode": po["barcode"]
-                    })
+                        # NO 'approval' here!
+                    }
+                    po_by_supplier[supid]["items"].append(item_dict)
                 expected_dt = datetime.datetime.now()
                 created_by = st.session_state.get("user_email", "ManualUser")
                 any_success = False
@@ -226,7 +227,6 @@ def manual_po_page():
                                          f"Items Table: `purchaseorderitems`\n"
                                          f"Columns: {list(supinfo['items'][0].keys()) if supinfo['items'] else 'None'}\n"
                                          f"Items Data:\n```{pd.DataFrame(supinfo['items'])}```")
-                        # Do NOT pass 'approval'
                         poid = po_handler.create_manual_po(
                             supid, expected_dt, supinfo["items"], created_by
                         )
