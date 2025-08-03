@@ -1,297 +1,251 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-from db_handler import DatabaseManager
-from psycopg2.extras import execute_values
+import datetime
+import traceback
+from PO.po_handler import POHandler
 
-class POHandler(DatabaseManager):
-    """Handles all database interactions related to purchase orders."""
+try:
+    from streamlit_qrcode_scanner import qrcode_scanner
+    QR_AVAILABLE = True
+except ImportError:
+    QR_AVAILABLE = False
 
-    def get_all_purchase_orders(self):
-        """
-        Returns a DataFrame with columns:
-        - status, supplierid, supproposeddeliver, supproposedquantity, etc.
-        - Includes the new 'approval' columns for both PO and PO items.
-        - Everything except statuses in the 'Archived' set is retrieved.
-        """
-        query = """
-        SELECT 
-            po.POID AS poid,
-            po.SupplierID AS supplierid,
-            po.OrderDate AS orderdate,
-            po.ExpectedDelivery AS expecteddelivery,
-            po.Status AS status,
-            po.RespondedAt AS respondedat,
-            po.ActualDelivery AS actualdelivery,
-            po.CreatedBy AS createdby,
-            po.supproposeddeliver AS sup_proposeddeliver,
-            po.SupplierNote AS suppliernote,
-            po.OriginalPOID AS originalpoid,
-            po.Approval AS po_approval,      -- Added approval column
-            s.SupplierName AS suppliername,
+BARCODE_COLUMN = "barcode"
 
-            poi.ItemID AS itemid,
-            poi.OrderedQuantity AS orderedquantity,
-            poi.EstimatedPrice AS estimatedprice,
-            poi.ReceivedQuantity AS receivedquantity,
-            poi.SupProposedQuantity AS supproposedquantity,
-            poi.SupProposedPrice AS supproposedprice,
-            poi.Approval AS item_approval,   -- Added approval column
+@st.cache_data
+def load_locids():
+    LOCID_CSV_PATH = "assets/locid_list.csv"
+    df = pd.read_csv(LOCID_CSV_PATH)
+    filtered = set(str(l).strip() for l in df["locid"].dropna().unique())
+    return df, filtered
 
-            i.ItemNameEnglish AS itemnameenglish,
-            i.ItemPicture AS itempicture
-        FROM PurchaseOrders po
-        JOIN Supplier s ON po.SupplierID = s.SupplierID
-        JOIN PurchaseOrderItems poi ON po.POID = poi.POID
-        JOIN Item i ON poi.ItemID = i.ItemID
-        WHERE po.Status NOT IN (
-            'Completed', 
-            'Declined', 
-            'Declined by AMAS',
-            'Declined by Supplier'
-        )
-        ORDER BY po.OrderDate DESC
-        """
-        return self.fetch_data(query)
+locid_df, FILTERED_LOCIDS = load_locids()
 
-    def get_archived_purchase_orders(self):
-        query = """
-        SELECT 
-            po.POID AS poid,
-            po.SupplierID AS supplierid,
-            po.OrderDate AS orderdate,
-            po.ExpectedDelivery AS expecteddelivery,
-            po.Status AS status,
-            po.RespondedAt AS respondedat,
-            po.ActualDelivery AS actualdelivery,
-            po.CreatedBy AS createdby,
-            po.SupplierNote AS suppliernote,
-            po.Approval AS po_approval,     -- Added approval column
-            s.SupplierName AS suppliername,
+@st.cache_resource
+def get_po_handler():
+    return POHandler()
 
-            poi.ItemID AS itemid,
-            poi.OrderedQuantity AS orderedquantity,
-            poi.EstimatedPrice AS estimatedprice,
-            poi.ReceivedQuantity AS receivedquantity,
-            poi.Approval AS item_approval,  -- Added approval column
+@st.cache_data
+def get_latest_estimated_price(item_id):
+    po_handler = POHandler()
+    price_df = po_handler.fetch_data("""
+        SELECT estimatedprice FROM purchaseorderitems
+        WHERE itemid = %s AND estimatedprice IS NOT NULL AND estimatedprice > 0
+        ORDER BY poitemid DESC LIMIT 1
+    """, (int(item_id),))
+    if not price_df.empty and pd.notnull(price_df.iloc[0]["estimatedprice"]):
+        return float(price_df.iloc[0]["estimatedprice"])
+    return 0.0
 
-            i.ItemNameEnglish AS itemnameenglish,
-            i.ItemPicture AS itempicture
-        FROM PurchaseOrders po
-        JOIN Supplier s ON po.SupplierID = s.SupplierID
-        JOIN PurchaseOrderItems poi ON po.POID = poi.POID
-        JOIN Item i ON poi.ItemID = i.ItemID
-        WHERE po.Status IN (
-            'Completed',
-            'Declined',
-            'Declined by AMAS',
-            'Declined by Supplier'
-        )
-        ORDER BY po.OrderDate DESC
-        """
-        return self.fetch_data(query)
+def manual_po_page():
+    st.header("📝 Manual Purchase Orders – Add Items")
 
-    def get_items(self):
-        query = """
-        SELECT 
-            ItemID AS itemid,
-            ItemNameEnglish AS itemnameenglish,
-            ItemPicture AS itempicture,
-            AverageRequired AS averagerequired
-        FROM Item
-        """
-        return self.fetch_data(query)
+    po_handler = get_po_handler()
 
-    def create_manual_po(self, supplier_id, expected_delivery, items: list, created_by: str, original_poid=None, approval='pending'):
-        """Create a manual purchase order and its line items, including the approval field."""
-        supplier_id   = int(supplier_id) if supplier_id is not None else None
-        original_poid = int(original_poid) if original_poid else None
-        if pd.notnull(expected_delivery) and not isinstance(expected_delivery, datetime):
-            expected_delivery = pd.to_datetime(expected_delivery).to_pydatetime()
+    @st.cache_data
+    def get_items():
+        return po_handler.fetch_data("SELECT * FROM item")
+    @st.cache_data
+    def get_mapping():
+        return po_handler.get_item_supplier_mapping()
+    @st.cache_data
+    def get_suppliers():
+        return po_handler.get_suppliers()
 
-        self._ensure_live_conn()
-        with self.conn:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO purchaseorders
-                          (supplierid, expecteddelivery, createdby, originalpoid, approval)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING poid;
-                    """,
-                    (supplier_id, expected_delivery, created_by, original_poid, approval),
+    items_df = get_items()
+    mapping_df = get_mapping()
+    suppliers_df = get_suppliers()
+
+    if "po_items" not in st.session_state:
+        st.session_state["po_items"] = []
+    if "confirm_feedback" not in st.session_state:
+        st.session_state["confirm_feedback"] = ""
+    if "clear_after_confirm" not in st.session_state:
+        st.session_state["clear_after_confirm"] = False
+    if "just_confirmed" not in st.session_state:
+        st.session_state["just_confirmed"] = False
+    if "debug_details" not in st.session_state:
+        st.session_state["debug_details"] = ""
+
+    if BARCODE_COLUMN not in items_df.columns:
+        st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
+        st.stop()
+
+    barcode_to_item = {
+        str(row[BARCODE_COLUMN]).strip(): row
+        for _, row in items_df.iterrows()
+        if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
+    }
+
+    if st.session_state["clear_after_confirm"]:
+        st.session_state["po_items"] = []
+        st.session_state["clear_after_confirm"] = False
+        st.session_state["just_confirmed"] = True
+    else:
+        st.session_state["just_confirmed"] = False
+
+    if st.session_state["confirm_feedback"]:
+        st.error(st.session_state["confirm_feedback"]) if st.session_state["confirm_feedback"].startswith("❌") else st.success(st.session_state["confirm_feedback"])
+        if st.session_state["debug_details"]:
+            with st.expander("Show Debug Info"):
+                st.markdown(st.session_state["debug_details"])
+        st.session_state["confirm_feedback"] = ""
+        st.session_state["debug_details"] = ""
+
+    if not st.session_state["just_confirmed"]:
+        tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
+
+        def add_item_by_barcode(barcode):
+            code = str(barcode).strip()
+            if not code:
+                return
+            found_row = barcode_to_item.get(code, None)
+            if found_row is None and code.lstrip('0') != code:
+                found_row = barcode_to_item.get(code.lstrip('0'), None)
+            if found_row is None:
+                st.warning(f"Barcode '{code}' not found.")
+                return
+            item_id = int(found_row["itemid"])
+            suppliers_for_item = mapping_df[mapping_df["itemid"] == item_id]["supplierid"].tolist()
+            if not suppliers_for_item:
+                st.warning(f"No supplier found for item '{found_row['itemnameenglish']}'.")
+                return
+            supplierid = int(suppliers_for_item[0])
+            suppliername = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"].values[0]
+            already_added = any(
+                po["item_id"] == item_id and po["supplierid"] == supplierid
+                for po in st.session_state["po_items"]
+            )
+            est_price = get_latest_estimated_price(item_id)
+            if not already_added:
+                st.session_state["po_items"].append({
+                    "item_id": item_id,
+                    "itemname": found_row["itemnameenglish"],
+                    "barcode": code,
+                    "quantity": 1,
+                    "estimated_price": est_price,
+                    "supplierid": supplierid,
+                    "suppliername": suppliername,
+                    "possible_suppliers": suppliers_for_item,
+                    "classcat": found_row.get("classcat", ""),
+                    "departmentcat": found_row.get("departmentcat", ""),
+                    "sectioncat": found_row.get("sectioncat", ""),
+                    "familycat": found_row.get("familycat", ""),
+                })
+                st.success(f"Added: {found_row['itemnameenglish']}")
+                st.rerun()
+            else:
+                st.info(f"Item '{found_row['itemnameenglish']}' (Supplier: {suppliername}) already added.")
+
+        with tab1:
+            st.markdown("**Scan barcode with your webcam**")
+            barcode_camera = ""
+            if QR_AVAILABLE:
+                barcode_camera = qrcode_scanner(key="barcode_camera") or ""
+                if barcode_camera:
+                    add_item_by_barcode(barcode_camera)
+            else:
+                st.warning("Camera barcode scanning requires `streamlit-qrcode-scanner`. Please install it or use the next tab.")
+
+        with tab2:
+            st.markdown("**Or enter barcode manually**")
+            with st.form("add_barcode_form", clear_on_submit=True):
+                bc_col1, bc_col2 = st.columns([5,1])
+                barcode_in = bc_col1.text_input(
+                    "Scan/Enter Barcode",
+                    value="",
+                    label_visibility="visible",
+                    autocomplete="off",
+                    key="barcode_input"
                 )
-                po_id = cur.fetchone()[0]
+                add_click = bc_col2.form_submit_button("Add Item")
+                if add_click and barcode_in:
+                    add_item_by_barcode(barcode_in)
 
-                rows = [
-                    (
-                        po_id,
-                        int(it["item_id"]),
-                        int(it["quantity"]),
-                        it.get("estimated_price"),
-                        0,
-                        it.get("item_approval", "pending")  # new, allow for default or explicit
+        st.write("### Current Items")
+        po_items = st.session_state["po_items"]
+        if not po_items:
+            st.info("No items added yet. Scan a barcode to begin.")
+        else:
+            to_remove = []
+            for idx, po in enumerate(po_items):
+                cols = st.columns([10, 1])
+                with cols[0]:
+                    st.markdown(
+                        f"<div style='font-size:18px;font-weight:700;color:#174e89;margin-bottom:2px;'>🛒 {po['itemname']}</div>"
+                        f"<div style='font-size:14px;color:#086b37;margin-bottom:3px;'>Barcode: <code>{po['barcode']}</code></div>"
+                        f"<div style='font-size:13px;color:#098A23;margin-bottom:2px;'>Supplier: {po['suppliername']}</div>",
+                        unsafe_allow_html=True,
                     )
-                    for it in items
-                ]
+                    tags = [
+                        f"<span style='background:#fff3e0;color:#C61C1C;border-radius:7px;padding:3px 12px 3px 12px;font-size:13.5px;margin-right:6px;'><b>Class:</b> {po.get('classcat','')}</span>",
+                        f"<span style='background:#e3f2fd;color:#004CBB;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Department:</b> {po.get('departmentcat','')}</span>",
+                        f"<span style='background:#eafaf1;color:#098A23;border-radius:7px;padding:3px 12px;font-size:13.5px;margin-right:6px;'><b>Section:</b> {po.get('sectioncat','')}</span>",
+                        f"<span style='background:#fff8e1;color:#FF8800;border-radius:7px;padding:3px 12px;font-size:13.5px;'><b>Family:</b> {po.get('familycat','')}</span>",
+                    ]
+                    st.markdown(f"<div style='margin-bottom:4px;'>{''.join(tags)}</div>", unsafe_allow_html=True)
+                with cols[1]:
+                    if st.button("❌", key=f"rm_{idx}"):
+                        to_remove.append(idx)
+                st.markdown("---")
+            if to_remove:
+                for idx in reversed(to_remove):
+                    st.session_state["po_items"].pop(idx)
+                st.rerun()
 
-                execute_values(
-                    cur,
-                    """
-                    INSERT INTO purchaseorderitems
-                          (poid, itemid, orderedquantity, estimatedprice, receivedquantity, approval)
-                    VALUES %s
-                    """,
-                    rows,
-                )
-        return po_id
+        if st.button("✅ Confirm"):
+            debug_msgs = []
+            if not st.session_state["po_items"]:
+                st.error("Please add at least one item before confirming.")
+            else:
+                po_by_supplier = {}
+                for po in st.session_state["po_items"]:
+                    supid = po["supplierid"]
+                    if supid not in po_by_supplier:
+                        po_by_supplier[supid] = {
+                            "suppliername": po["suppliername"],
+                            "items": []
+                        }
+                    # Build item dict with only the expected columns (no approval!)
+                    item_dict = {
+                        "item_id": po["item_id"],
+                        "quantity": po["quantity"],
+                        "estimated_price": po["estimated_price"],
+                        "itemname": po["itemname"],
+                        "barcode": po["barcode"]
+                        # NO 'approval' here!
+                    }
+                    po_by_supplier[supid]["items"].append(item_dict)
+                expected_dt = datetime.datetime.now()
+                created_by = st.session_state.get("user_email", "ManualUser")
+                any_success = False
+                for supid, supinfo in po_by_supplier.items():
+                    try:
+                        debug_msgs.append(f"**Trying to create PO:**\n"
+                                         f"SupplierID: `{supid}`\n"
+                                         f"SupplierName: `{supinfo['suppliername']}`\n"
+                                         f"Items Table: `purchaseorderitems`\n"
+                                         f"Columns: {list(supinfo['items'][0].keys()) if supinfo['items'] else 'None'}\n"
+                                         f"Items Data:\n```{pd.DataFrame(supinfo['items'])}```")
+                        poid = po_handler.create_manual_po(
+                            supid, expected_dt, supinfo["items"], created_by
+                        )
+                        debug_msgs.append(f"PO Creation: **SUCCESS** (poid={poid})\n---")
+                        any_success = True
+                    except Exception as e:
+                        debug_msgs.append(
+                            f"PO Creation: **FAILED**\n"
+                            f"Exception:\n```\n{traceback.format_exc()}\n```\n"
+                            f"SupplierID: `{supid}` | SupplierName: `{supinfo['suppliername']}`\n"
+                            f"Items Data:\n```{pd.DataFrame(supinfo['items'])}```"
+                        )
+                if any_success:
+                    st.session_state["confirm_feedback"] = "✅ All items confirmed and purchase orders created!"
+                    st.session_state["debug_details"] = ""
+                else:
+                    st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
+                    st.session_state["debug_details"] = "\n\n---\n\n".join(debug_msgs)
+                st.session_state["clear_after_confirm"] = True
+                st.rerun()
 
-    def update_po_status_to_received(self, poid):
-        poid = int(poid)
-        query = """
-        UPDATE PurchaseOrders
-        SET Status = 'Received', ActualDelivery = CURRENT_TIMESTAMP
-        WHERE POID = %s
-        """
-        self.execute_command(query, (poid,))
-
-    def update_received_quantity(self, poid, item_id, received_quantity):
-        poid = int(poid)
-        item_id = int(item_id)
-        received_quantity = int(received_quantity)
-
-        query = """
-        UPDATE PurchaseOrderItems
-        SET ReceivedQuantity = %s
-        WHERE POID = %s AND ItemID = %s
-        """
-        self.execute_command(query, (received_quantity, poid, item_id))
-
-    # --- New: Approval column update methods ---
-    def update_po_approval(self, poid, approval):
-        poid = int(poid)
-        assert approval in ['pending', 'approved', 'rejected']
-        query = """
-        UPDATE PurchaseOrders
-        SET approval = %s
-        WHERE POID = %s
-        """
-        self.execute_command(query, (approval, poid))
-
-    def update_poitem_approval(self, poid, item_id, approval):
-        poid = int(poid)
-        item_id = int(item_id)
-        assert approval in ['pending', 'approved', 'rejected']
-        query = """
-        UPDATE PurchaseOrderItems
-        SET approval = %s
-        WHERE POID = %s AND ItemID = %s
-        """
-        self.execute_command(query, (approval, poid, item_id))
-    # ------------------------------------------
-
-    def get_item_supplier_mapping(self):
-        query = "SELECT ItemID AS itemid, SupplierID AS supplierid FROM ItemSupplier"
-        return self.fetch_data(query)
-
-    def accept_proposed_po(self, proposed_po_id: int):
-        proposed_po_id = int(proposed_po_id)
-
-        po_info_df = self.fetch_data(
-            "SELECT * FROM PurchaseOrders WHERE POID = %s",
-            (proposed_po_id,)
-        ).rename(columns=str.lower)
-
-        if po_info_df.empty:
-            return None
-
-        po_info = po_info_df.iloc[0]
-
-        items_info = self.fetch_data(
-            "SELECT * FROM PurchaseOrderItems WHERE POID = %s",
-            (proposed_po_id,)
-        ).rename(columns=str.lower)
-
-        supplier_id = po_info.get("supplierid")
-        if pd.notnull(supplier_id):
-            supplier_id = int(supplier_id)
-
-        sup_proposed_date = None
-        if pd.notnull(po_info.get("supproposeddeliver")):
-            sup_proposed_date = pd.to_datetime(
-                po_info["supproposeddeliver"]
-            ).to_pydatetime()
-
-        new_items = []
-        for _, row in items_info.iterrows():
-            qty = (
-                int(row["supproposedquantity"])
-                if pd.notnull(row.get("supproposedquantity"))
-                else int(row.get("orderedquantity") or 1)
-            )
-
-            price = (
-                float(row["supproposedprice"])
-                if pd.notnull(row.get("supproposedprice"))
-                else float(row.get("estimatedprice") or 0.0)
-            )
-
-            item_approval = row.get("approval", "pending")
-            new_items.append({
-                "item_id": int(row["itemid"]),
-                "quantity": qty,
-                "estimated_price": price,
-                "item_approval": item_approval
-            })
-
-        created_by = po_info.get("createdby", "Unknown")
-        po_approval = po_info.get("approval", "pending")
-
-        new_poid = self.create_manual_po(
-            supplier_id=supplier_id,
-            expected_delivery=sup_proposed_date,
-            items=new_items,
-            created_by=created_by,
-            original_poid=proposed_po_id,
-            approval=po_approval
-        )
-
-        self.execute_command(
-            "UPDATE PurchaseOrders SET Status = 'Accepted by AMAS' WHERE POID = %s",
-            (proposed_po_id,),
-        )
-        return new_poid
-
-    def decline_proposed_po(self, proposed_po_id):
-        proposed_po_id = int(proposed_po_id)
-        self.execute_command(
-            "UPDATE PurchaseOrders SET Status = 'Declined by AMAS' WHERE POID = %s",
-            (proposed_po_id,)
-        )
-
-    def modify_proposed_po(self, proposed_po_id, new_delivery_date, new_items, user_email):
-        proposed_po_id = int(proposed_po_id)
-        po_info_df = self.fetch_data("SELECT * FROM PurchaseOrders WHERE POID = %s", (proposed_po_id,))
-        if po_info_df.empty:
-            return None
-        po_info = po_info_df.iloc[0]
-
-        supplier_id = po_info.get("supplierid", None)
-        if pd.notnull(supplier_id):
-            supplier_id = int(supplier_id)
-        po_approval = po_info.get("approval", "pending")
-
-        new_poid = self.create_manual_po(
-            supplier_id=supplier_id,
-            expected_delivery=new_delivery_date,
-            items=new_items,
-            created_by=user_email,
-            original_poid=proposed_po_id,
-            approval=po_approval
-        )
-
-        self.execute_command(
-            "UPDATE PurchaseOrders SET Status = 'Modified by AMAS' WHERE POID = %s",
-            (proposed_po_id,)
-        )
-        return new_poid
+manual_po_page()
