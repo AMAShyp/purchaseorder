@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import traceback
 from PO.po_handler import POHandler
 
 try:
@@ -64,8 +63,6 @@ def manual_po_page():
         st.session_state["clear_after_confirm"] = False
     if "just_confirmed" not in st.session_state:
         st.session_state["just_confirmed"] = False
-    if "debug_details" not in st.session_state:
-        st.session_state["debug_details"] = ""
 
     if BARCODE_COLUMN not in items_df.columns:
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
@@ -86,11 +83,7 @@ def manual_po_page():
 
     if st.session_state["confirm_feedback"]:
         st.error(st.session_state["confirm_feedback"]) if st.session_state["confirm_feedback"].startswith("❌") else st.success(st.session_state["confirm_feedback"])
-        if st.session_state["debug_details"]:
-            with st.expander("Show Debug Info"):
-                st.markdown(st.session_state["debug_details"])
         st.session_state["confirm_feedback"] = ""
-        st.session_state["debug_details"] = ""
 
     if not st.session_state["just_confirmed"]:
         tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
@@ -194,7 +187,6 @@ def manual_po_page():
                 st.rerun()
 
         if st.button("✅ Confirm"):
-            debug_msgs = []
             if not st.session_state["po_items"]:
                 st.error("Please add at least one item before confirming.")
             else:
@@ -206,14 +198,12 @@ def manual_po_page():
                             "suppliername": po["suppliername"],
                             "items": []
                         }
-                    # Build item dict with only the expected columns (no approval!)
                     item_dict = {
                         "item_id": po["item_id"],
                         "quantity": po["quantity"],
                         "estimated_price": po["estimated_price"],
                         "itemname": po["itemname"],
                         "barcode": po["barcode"]
-                        # NO 'approval' here!
                     }
                     po_by_supplier[supid]["items"].append(item_dict)
                 expected_dt = datetime.datetime.now()
@@ -221,30 +211,16 @@ def manual_po_page():
                 any_success = False
                 for supid, supinfo in po_by_supplier.items():
                     try:
-                        debug_msgs.append(f"**Trying to create PO:**\n"
-                                         f"SupplierID: `{supid}`\n"
-                                         f"SupplierName: `{supinfo['suppliername']}`\n"
-                                         f"Items Table: `purchaseorderitems`\n"
-                                         f"Columns: {list(supinfo['items'][0].keys()) if supinfo['items'] else 'None'}\n"
-                                         f"Items Data:\n```{pd.DataFrame(supinfo['items'])}```")
                         poid = po_handler.create_manual_po(
                             supid, expected_dt, supinfo["items"], created_by
                         )
-                        debug_msgs.append(f"PO Creation: **SUCCESS** (poid={poid})\n---")
                         any_success = True
-                    except Exception as e:
-                        debug_msgs.append(
-                            f"PO Creation: **FAILED**\n"
-                            f"Exception:\n```\n{traceback.format_exc()}\n```\n"
-                            f"SupplierID: `{supid}` | SupplierName: `{supinfo['suppliername']}`\n"
-                            f"Items Data:\n```{pd.DataFrame(supinfo['items'])}```"
-                        )
+                    except Exception:
+                        pass
                 if any_success:
                     st.session_state["confirm_feedback"] = "✅ All items confirmed and purchase orders created!"
-                    st.session_state["debug_details"] = ""
                 else:
                     st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
-                    st.session_state["debug_details"] = "\n\n---\n\n".join(debug_msgs)
                 st.session_state["clear_after_confirm"] = True
                 st.rerun()
 
