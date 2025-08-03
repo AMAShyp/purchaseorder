@@ -72,12 +72,12 @@ def manual_po_page():
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
 
-    # --- Actually clear the items after rerun if flagged ---
+    # Actually clear the items after rerun if flagged
     if st.session_state["clear_after_confirm"]:
         st.session_state["po_items"] = []
         st.session_state["clear_after_confirm"] = False
 
-    # --- Show feedback message if present, then clear
+    # Show feedback message if present, then clear
     if st.session_state["confirm_feedback"]:
         st.success(st.session_state["confirm_feedback"])
         st.session_state["confirm_feedback"] = ""
@@ -194,20 +194,25 @@ def manual_po_page():
                         "suppliername": po["suppliername"],
                         "items": []
                     }
+                # Explicitly set approval to pending for items
                 po_by_supplier[supid]["items"].append({
                     "item_id": po["item_id"],
                     "quantity": po["quantity"],
                     "estimated_price": po["estimated_price"],
                     "itemname": po["itemname"],
                     "barcode": po["barcode"],
+                    "approval": "pending"
                 })
             expected_dt = datetime.datetime.now()
             created_by = st.session_state.get("user_email", "ManualUser")
             any_success = False
             for supid, supinfo in po_by_supplier.items():
                 try:
+                    # You can modify create_manual_po to accept and use "approval"
                     poid = po_handler.create_manual_po(
-                        supid, expected_dt, supinfo["items"], created_by)
+                        supid, expected_dt, supinfo["items"], created_by,
+                        approval="pending"  # Pass approval for PO if your handler supports it
+                    )
                     any_success = True
                 except Exception as e:
                     pass
@@ -216,6 +221,6 @@ def manual_po_page():
             else:
                 st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
             st.session_state["clear_after_confirm"] = True  # flag for next run
-            st.rerun()  # Modern Streamlit API!
+            st.rerun()
 
 manual_po_page()
