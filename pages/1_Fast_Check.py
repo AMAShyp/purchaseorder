@@ -70,6 +70,7 @@ def manual_po_page():
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
 
+    # Show feedback message after confirmation and clear feedback after display
     if st.session_state["confirm_feedback"]:
         st.success(st.session_state["confirm_feedback"])
         st.session_state["confirm_feedback"] = ""
@@ -174,6 +175,7 @@ def manual_po_page():
                 st.session_state["po_items"].pop(idx)
             st.rerun()
 
+    # Confirm: create purchase orders, clear items, and show only success message
     if st.button("✅ Confirm"):
         if not po_items:
             st.error("Please add at least one item before confirming.")
@@ -202,12 +204,12 @@ def manual_po_page():
                         supid, expected_dt, supinfo["items"], created_by)
                     any_success = True
                 except Exception as e:
-                    pass  # Optionally, log failed PO creation
+                    pass
             if any_success:
                 st.session_state["confirm_feedback"] = "✅ All items confirmed and purchase orders created!"
             else:
                 st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
-            st.session_state["po_items"] = []
+            st.session_state["po_items"] = []  # CLEAR ITEMS after confirm!
             st.rerun()
 
 manual_po_page()
