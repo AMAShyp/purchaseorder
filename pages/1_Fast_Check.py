@@ -2,19 +2,20 @@ import streamlit as st
 import pandas as pd
 import datetime
 
-# Barcode scanner is optional
+# Barcode scanner: optional
 try:
     from streamlit_qrcode_scanner import qrcode_scanner
     QR_AVAILABLE = True
 except ImportError:
     QR_AVAILABLE = False
 
-from PO.po_handler import POHandler  # <-- ONLY import here, do not import POHandler inside its own module!
+from PO.po_handler import POHandler
 
 BARCODE_COLUMN = "barcode"
 
 @st.cache_data
 def load_locids():
+    # Load locations for filtering (optional, used elsewhere)
     LOCID_CSV_PATH = "assets/locid_list.csv"
     df = pd.read_csv(LOCID_CSV_PATH)
     filtered = set(str(l).strip() for l in df["locid"].dropna().unique())
@@ -40,7 +41,7 @@ def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
     po_handler = get_po_handler()
 
-    # Data fetchers
+    # Load data
     @st.cache_data
     def get_items():
         return po_handler.fetch_data("SELECT * FROM item")
@@ -55,7 +56,7 @@ def manual_po_page():
     mapping_df = get_mapping()
     suppliers_df = get_suppliers()
 
-    # Session state setup
+    # Session state initialization
     if "po_items" not in st.session_state:
         st.session_state["po_items"] = []
     if "confirm_feedback" not in st.session_state:
@@ -65,7 +66,7 @@ def manual_po_page():
     if "just_confirmed" not in st.session_state:
         st.session_state["just_confirmed"] = False
 
-    # Check for barcode column
+    # Check if barcode column exists
     if BARCODE_COLUMN not in items_df.columns:
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
         st.stop()
@@ -76,7 +77,7 @@ def manual_po_page():
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
 
-    # Handle clearing after confirmation
+    # Clear state after confirmation
     if st.session_state["clear_after_confirm"]:
         st.session_state["po_items"] = []
         st.session_state["clear_after_confirm"] = False
@@ -84,12 +85,13 @@ def manual_po_page():
     else:
         st.session_state["just_confirmed"] = False
 
-    # Feedback display
+    # Show confirmation feedback
     if st.session_state["confirm_feedback"]:
         msg = st.session_state["confirm_feedback"]
         st.error(msg) if msg.startswith("❌") else st.success(msg)
         st.session_state["confirm_feedback"] = ""
 
+    # UI: Add item via barcode (camera or manual)
     if not st.session_state["just_confirmed"]:
         tab1, tab2 = st.tabs(["📷 Camera Scan", "⌨️ Type Barcode"])
 
@@ -135,19 +137,18 @@ def manual_po_page():
             else:
                 st.info(f"Item '{found_row['itemnameenglish']}' (Supplier: {suppliername}) already added.")
 
+        # Camera tab
         with tab1:
             st.markdown("**Scan barcode with your webcam**")
-            camera_size = st.slider(
-                "Adjust camera (detection box) size", min_value=120, max_value=400, value=180, step=10
-            )
             barcode_camera = ""
             if QR_AVAILABLE:
-                barcode_camera = qrcode_scanner(key="barcode_camera", size=camera_size) or ""
+                barcode_camera = qrcode_scanner(key="barcode_camera") or ""
                 if barcode_camera:
                     add_item_by_barcode(barcode_camera)
             else:
                 st.warning("Camera barcode scanning requires `streamlit-qrcode-scanner`. Please install it or use the next tab.")
 
+        # Manual tab
         with tab2:
             st.markdown("**Or enter barcode manually**")
             with st.form("add_barcode_form", clear_on_submit=True):
@@ -163,6 +164,7 @@ def manual_po_page():
                 if add_click and barcode_in:
                     add_item_by_barcode(barcode_in)
 
+        # List current items and allow removal
         st.write("### Current Items")
         po_items = st.session_state["po_items"]
         if not po_items:
@@ -233,5 +235,4 @@ def manual_po_page():
                 st.session_state["clear_after_confirm"] = True
                 st.rerun()
 
-if __name__ == "__main__":
-    manual_po_page()
+manual_po_page()
