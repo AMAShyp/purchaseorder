@@ -1,13 +1,15 @@
 import streamlit as st
 import pandas as pd
 import datetime
-from PO.po_handler import POHandler
 
+# Barcode scanner is optional
 try:
     from streamlit_qrcode_scanner import qrcode_scanner
     QR_AVAILABLE = True
 except ImportError:
     QR_AVAILABLE = False
+
+from PO.po_handler import POHandler  # <-- ONLY import here, do not import POHandler inside its own module!
 
 BARCODE_COLUMN = "barcode"
 
@@ -18,15 +20,13 @@ def load_locids():
     filtered = set(str(l).strip() for l in df["locid"].dropna().unique())
     return df, filtered
 
-locid_df, FILTERED_LOCIDS = load_locids()
-
 @st.cache_resource
 def get_po_handler():
     return POHandler()
 
 @st.cache_data
 def get_latest_estimated_price(item_id):
-    po_handler = POHandler()
+    po_handler = get_po_handler()
     price_df = po_handler.fetch_data("""
         SELECT estimatedprice FROM purchaseorderitems
         WHERE itemid = %s AND estimatedprice IS NOT NULL AND estimatedprice > 0
@@ -38,9 +38,9 @@ def get_latest_estimated_price(item_id):
 
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
-
     po_handler = get_po_handler()
 
+    # Data fetchers
     @st.cache_data
     def get_items():
         return po_handler.fetch_data("SELECT * FROM item")
@@ -55,6 +55,7 @@ def manual_po_page():
     mapping_df = get_mapping()
     suppliers_df = get_suppliers()
 
+    # Session state setup
     if "po_items" not in st.session_state:
         st.session_state["po_items"] = []
     if "confirm_feedback" not in st.session_state:
@@ -64,6 +65,7 @@ def manual_po_page():
     if "just_confirmed" not in st.session_state:
         st.session_state["just_confirmed"] = False
 
+    # Check for barcode column
     if BARCODE_COLUMN not in items_df.columns:
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
         st.stop()
@@ -74,6 +76,7 @@ def manual_po_page():
         if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
     }
 
+    # Handle clearing after confirmation
     if st.session_state["clear_after_confirm"]:
         st.session_state["po_items"] = []
         st.session_state["clear_after_confirm"] = False
@@ -81,8 +84,10 @@ def manual_po_page():
     else:
         st.session_state["just_confirmed"] = False
 
+    # Feedback display
     if st.session_state["confirm_feedback"]:
-        st.error(st.session_state["confirm_feedback"]) if st.session_state["confirm_feedback"].startswith("❌") else st.success(st.session_state["confirm_feedback"])
+        msg = st.session_state["confirm_feedback"]
+        st.error(msg) if msg.startswith("❌") else st.success(msg)
         st.session_state["confirm_feedback"] = ""
 
     if not st.session_state["just_confirmed"]:
@@ -189,6 +194,7 @@ def manual_po_page():
                     st.session_state["po_items"].pop(idx)
                 st.rerun()
 
+        # Confirm button to create PO(s)
         if st.button("✅ Confirm"):
             if not st.session_state["po_items"]:
                 st.error("Please add at least one item before confirming.")
@@ -218,8 +224,8 @@ def manual_po_page():
                             supid, expected_dt, supinfo["items"], created_by
                         )
                         any_success = True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        st.error(f"Failed for supplier {supinfo['suppliername']}: {e}")
                 if any_success:
                     st.session_state["confirm_feedback"] = "✅ All items confirmed and purchase orders created!"
                 else:
@@ -227,4 +233,5 @@ def manual_po_page():
                 st.session_state["clear_after_confirm"] = True
                 st.rerun()
 
-manual_po_page()
+if __name__ == "__main__":
+    manual_po_page()
