@@ -132,17 +132,12 @@ def manual_po_page():
 
         with tab1:
             st.markdown("**Scan barcode with your webcam**")
-
-            # --- User slider to control camera/green box size
-            size = st.slider(
-                "Adjust camera (green box) size", 
-                min_value=100, max_value=400, value=180, step=10, 
-                help="Set a smaller value to reduce the preview/box size."
+            camera_size = st.slider(
+                "Adjust camera (detection box) size", min_value=120, max_value=400, value=180, step=10
             )
-
             barcode_camera = ""
             if QR_AVAILABLE:
-                barcode_camera = qrcode_scanner(key="barcode_camera", size=size) or ""
+                barcode_camera = qrcode_scanner(key="barcode_camera", size=camera_size) or ""
                 if barcode_camera:
                     add_item_by_barcode(barcode_camera)
             else:
