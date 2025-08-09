@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import datetime
@@ -14,6 +13,34 @@ from PO.po_handler import POHandler
 
 BARCODE_COLUMN = "barcode"
 
+# ---------- Helpers to make DB frames cache-safe ----------
+def _to_pickle_safe(val):
+    """Convert values that break pickle (e.g., memoryview, bytes) into safe types."""
+    if isinstance(val, memoryview):
+        # Convert memoryview -> bytes
+        try:
+            val = bytes(val)
+        except Exception:
+            return None
+    if isinstance(val, (bytes, bytearray)):
+        # Try UTF-8 decode first; if it fails, keep as hex string
+        try:
+            return val.decode("utf-8")
+        except Exception:
+            try:
+                return bytes(val).hex()
+            except Exception:
+                return None
+    return val
+
+def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply _to_pickle_safe elementwise so st.cache_data can pickle the result."""
+    if df is None or df.empty:
+        return df
+    # applymap is fine here (element-wise); fast enough for typical result sizes
+    return df.applymap(_to_pickle_safe)
+
+# ---------- Cached utilities ----------
 @st.cache_data
 def load_locids():
     LOCID_CSV_PATH = "assets/locid_list.csv"
@@ -33,7 +60,9 @@ def get_latest_estimated_price(item_id):
         WHERE itemid = %s AND estimatedprice IS NOT NULL AND estimatedprice > 0
         ORDER BY poitemid DESC LIMIT 1
     """, (int(item_id),))
+    price_df = sanitize_df(price_df)
     if not price_df.empty and pd.notnull(price_df.iloc[0]["estimatedprice"]):
+        # Ensure plain float
         return float(price_df.iloc[0]["estimatedprice"])
     return 0.0
 
@@ -41,16 +70,44 @@ def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
     po_handler = get_po_handler()
 
-    # Load data from DB via POHandler
+    # Load data from DB via POHandler (cache-safe)
     @st.cache_data
     def get_items():
-        return po_handler.fetch_data("SELECT * FROM item")
+        df = po_handler.fetch_data("SELECT * FROM item")
+        df = sanitize_df(df)
+        # Ensure barcode is a clean string (for dict keys / comparisons)
+        if BARCODE_COLUMN in df.columns:
+            df[BARCODE_COLUMN] = df[BARCODE_COLUMN].apply(
+                lambda x: "" if pd.isna(x) else str(x).strip()
+            )
+        # Also normalize common text columns that might arrive as bytes
+        for col in ("itemnameenglish", "classcat", "departmentcat", "sectioncat", "familycat"):
+            if col in df.columns:
+                df[col] = df[col].apply(_to_pickle_safe).astype(str)
+        # Ensure itemid is int when possible
+        if "itemid" in df.columns:
+            df["itemid"] = pd.to_numeric(df["itemid"], errors="coerce").astype("Int64")
+        return df
+
     @st.cache_data
     def get_mapping():
-        return po_handler.get_item_supplier_mapping()
+        df = po_handler.get_item_supplier_mapping()
+        df = sanitize_df(df)
+        # Normalize ID columns to int where possible
+        for col in ("itemid", "supplierid"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+        return df
+
     @st.cache_data
     def get_suppliers():
-        return po_handler.get_suppliers()
+        df = po_handler.get_suppliers()
+        df = sanitize_df(df)
+        if "supplierid" in df.columns:
+            df["supplierid"] = pd.to_numeric(df["supplierid"], errors="coerce").astype("Int64")
+        if "suppliername" in df.columns:
+            df["suppliername"] = df["suppliername"].apply(_to_pickle_safe).astype(str)
+        return df
 
     items_df = get_items()
     mapping_df = get_mapping()
@@ -71,11 +128,12 @@ def manual_po_page():
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
         st.stop()
 
-    barcode_to_item = {
-        str(row[BARCODE_COLUMN]).strip(): row
-        for _, row in items_df.iterrows()
-        if pd.notnull(row[BARCODE_COLUMN]) and str(row[BARCODE_COLUMN]).strip()
-    }
+    # Build a lookup dict: barcode -> row (use dict-like row to avoid pandas Series pickling surprises)
+    barcode_to_item = {}
+    for _, row in items_df.iterrows():
+        bc = row[BARCODE_COLUMN]
+        if pd.notnull(bc) and str(bc).strip():
+            barcode_to_item[str(bc).strip()] = row
 
     # If just confirmed, clear items and stop here (no debug, no UI shown)
     if st.session_state["clear_after_confirm"]:
@@ -103,43 +161,56 @@ def manual_po_page():
         code = str(barcode).strip()
         if not code:
             return
+
         found_row = barcode_to_item.get(code, None)
         if found_row is None and code.lstrip('0') != code:
             found_row = barcode_to_item.get(code.lstrip('0'), None)
         if found_row is None:
             st.warning(f"Barcode '{code}' not found.")
             return
-        item_id = int(found_row["itemid"])
-        suppliers_for_item = mapping_df[mapping_df["itemid"] == item_id]["supplierid"].tolist()
-        if not suppliers_for_item:
-            st.warning(f"No supplier found for item '{found_row['itemnameenglish']}'.")
+
+        # Extract fields safely
+        item_id = int(found_row["itemid"]) if pd.notnull(found_row["itemid"]) else None
+        if item_id is None:
+            st.warning("Item ID missing for this barcode.")
             return
+
+        suppliers_for_item = mapping_df[mapping_df["itemid"] == item_id]["supplierid"].dropna().astype(int).tolist()
+        if not suppliers_for_item:
+            name_eng = str(found_row.get("itemnameenglish", "Unnamed"))
+            st.warning(f"No supplier found for item '{name_eng}'.")
+            return
+
         supplierid = int(suppliers_for_item[0])
-        suppliername = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"].values[0]
+        sup_name_series = suppliers_df[suppliers_df["supplierid"] == supplierid]["suppliername"]
+        suppliername = str(sup_name_series.values[0]) if not sup_name_series.empty else f"Supplier {supplierid}"
+
         already_added = any(
             po["item_id"] == item_id and po["supplierid"] == supplierid
             for po in st.session_state["po_items"]
         )
+
         est_price = get_latest_estimated_price(item_id)
+
         if not already_added:
             st.session_state["po_items"].append({
                 "item_id": item_id,
-                "itemname": found_row["itemnameenglish"],
+                "itemname": str(found_row.get("itemnameenglish", "")),
                 "barcode": code,
                 "quantity": 1,
-                "estimated_price": est_price,
+                "estimated_price": float(est_price),
                 "supplierid": supplierid,
                 "suppliername": suppliername,
                 "possible_suppliers": suppliers_for_item,
-                "classcat": found_row.get("classcat", ""),
-                "departmentcat": found_row.get("departmentcat", ""),
-                "sectioncat": found_row.get("sectioncat", ""),
-                "familycat": found_row.get("familycat", ""),
+                "classcat": str(found_row.get("classcat", "")),
+                "departmentcat": str(found_row.get("departmentcat", "")),
+                "sectioncat": str(found_row.get("sectioncat", "")),
+                "familycat": str(found_row.get("familycat", "")),
             })
-            st.success(f"Added: {found_row['itemnameenglish']}")
+            st.success(f"Added: {str(found_row.get('itemnameenglish', ''))}")
             st.rerun()
         else:
-            st.info(f"Item '{found_row['itemnameenglish']}' (Supplier: {suppliername}) already added.")
+            st.info(f"Item '{str(found_row.get('itemnameenglish', ''))}' (Supplier: {suppliername}) already added.")
 
     with tab1:
         st.markdown("**Scan barcode with your webcam**")
@@ -154,7 +225,7 @@ def manual_po_page():
     with tab2:
         st.markdown("**Or enter barcode manually**")
         with st.form("add_barcode_form", clear_on_submit=True):
-            bc_col1, bc_col2 = st.columns([5,1])
+            bc_col1, bc_col2 = st.columns([5, 1])
             barcode_in = bc_col1.text_input(
                 "Scan/Enter Barcode",
                 value="",
@@ -219,8 +290,10 @@ def manual_po_page():
                     "barcode": po["barcode"]
                 }
                 po_by_supplier[supid]["items"].append(item_dict)
+
             expected_dt = datetime.datetime.now()
             created_by = st.session_state.get("user_email", "ManualUser")
+
             any_success = False
             for supid, supinfo in po_by_supplier.items():
                 try:
@@ -230,10 +303,12 @@ def manual_po_page():
                     any_success = True
                 except Exception:
                     any_success = False
+
             if any_success:
                 st.session_state["confirm_feedback"] = "✅ All items confirmed and purchase orders created!"
             else:
                 st.session_state["confirm_feedback"] = "❌ Failed to create any purchase order."
+
             st.session_state["clear_after_confirm"] = True
             st.rerun()
 
