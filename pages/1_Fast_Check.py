@@ -17,13 +17,12 @@ BARCODE_COLUMN = "barcode"
 def _to_pickle_safe(val):
     """Convert values that break pickle (e.g., memoryview, bytes) into safe types."""
     if isinstance(val, memoryview):
-        # Convert memoryview -> bytes
         try:
             val = bytes(val)
         except Exception:
             return None
     if isinstance(val, (bytes, bytearray)):
-        # Try UTF-8 decode first; if it fails, keep as hex string
+        # Try UTF-8; if not decodable, store as hex string
         try:
             return val.decode("utf-8")
         except Exception:
@@ -37,7 +36,6 @@ def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
     """Apply _to_pickle_safe elementwise so st.cache_data can pickle the result."""
     if df is None or df.empty:
         return df
-    # applymap is fine here (element-wise); fast enough for typical result sizes
     return df.applymap(_to_pickle_safe)
 
 # ---------- Cached utilities ----------
@@ -53,7 +51,7 @@ def get_po_handler():
     return POHandler()
 
 @st.cache_data
-def get_latest_estimated_price(item_id):
+def get_latest_estimated_price(item_id: int) -> float:
     po_handler = get_po_handler()
     price_df = po_handler.fetch_data("""
         SELECT estimatedprice FROM purchaseorderitems
@@ -62,52 +60,58 @@ def get_latest_estimated_price(item_id):
     """, (int(item_id),))
     price_df = sanitize_df(price_df)
     if not price_df.empty and pd.notnull(price_df.iloc[0]["estimatedprice"]):
-        # Ensure plain float
         return float(price_df.iloc[0]["estimatedprice"])
     return 0.0
 
+# ---- DB accessors (cached) made pickle-safe and not capturing outer variables
+@st.cache_data
+def get_items():
+    po_handler = get_po_handler()
+    df = po_handler.fetch_data("SELECT * FROM item")
+    df = sanitize_df(df)
+
+    # Ensure barcode is clean string
+    if BARCODE_COLUMN in df.columns:
+        df[BARCODE_COLUMN] = df[BARCODE_COLUMN].apply(
+            lambda x: "" if pd.isna(x) else str(x).strip()
+        )
+
+    # Normalize common text columns that might arrive as bytes
+    for col in ("itemnameenglish", "classcat", "departmentcat", "sectioncat", "familycat"):
+        if col in df.columns:
+            df[col] = df[col].apply(_to_pickle_safe).astype(str)
+
+    # Ensure integer types
+    if "itemid" in df.columns:
+        df["itemid"] = pd.to_numeric(df["itemid"], errors="coerce").astype("Int64")
+
+    return df
+
+@st.cache_data
+def get_mapping():
+    po_handler = get_po_handler()
+    df = po_handler.get_item_supplier_mapping()
+    df = sanitize_df(df)
+
+    for col in ("itemid", "supplierid"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    return df
+
+@st.cache_data
+def get_suppliers():
+    po_handler = get_po_handler()
+    df = po_handler.get_suppliers()
+    df = sanitize_df(df)
+
+    if "supplierid" in df.columns:
+        df["supplierid"] = pd.to_numeric(df["supplierid"], errors="coerce").astype("Int64")
+    if "suppliername" in df.columns:
+        df["suppliername"] = df["suppliername"].apply(_to_pickle_safe).astype(str)
+    return df
+
 def manual_po_page():
     st.header("📝 Manual Purchase Orders – Add Items")
-    po_handler = get_po_handler()
-
-    # Load data from DB via POHandler (cache-safe)
-    @st.cache_data
-    def get_items():
-        df = po_handler.fetch_data("SELECT * FROM item")
-        df = sanitize_df(df)
-        # Ensure barcode is a clean string (for dict keys / comparisons)
-        if BARCODE_COLUMN in df.columns:
-            df[BARCODE_COLUMN] = df[BARCODE_COLUMN].apply(
-                lambda x: "" if pd.isna(x) else str(x).strip()
-            )
-        # Also normalize common text columns that might arrive as bytes
-        for col in ("itemnameenglish", "classcat", "departmentcat", "sectioncat", "familycat"):
-            if col in df.columns:
-                df[col] = df[col].apply(_to_pickle_safe).astype(str)
-        # Ensure itemid is int when possible
-        if "itemid" in df.columns:
-            df["itemid"] = pd.to_numeric(df["itemid"], errors="coerce").astype("Int64")
-        return df
-
-    @st.cache_data
-    def get_mapping():
-        df = po_handler.get_item_supplier_mapping()
-        df = sanitize_df(df)
-        # Normalize ID columns to int where possible
-        for col in ("itemid", "supplierid"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
-        return df
-
-    @st.cache_data
-    def get_suppliers():
-        df = po_handler.get_suppliers()
-        df = sanitize_df(df)
-        if "supplierid" in df.columns:
-            df["supplierid"] = pd.to_numeric(df["supplierid"], errors="coerce").astype("Int64")
-        if "suppliername" in df.columns:
-            df["suppliername"] = df["suppliername"].apply(_to_pickle_safe).astype(str)
-        return df
 
     items_df = get_items()
     mapping_df = get_mapping()
@@ -128,7 +132,7 @@ def manual_po_page():
         st.error(f"'{BARCODE_COLUMN}' column NOT FOUND in your item table!")
         st.stop()
 
-    # Build a lookup dict: barcode -> row (use dict-like row to avoid pandas Series pickling surprises)
+    # Build a lookup dict: barcode -> row
     barcode_to_item = {}
     for _, row in items_df.iterrows():
         bc = row[BARCODE_COLUMN]
@@ -175,7 +179,12 @@ def manual_po_page():
             st.warning("Item ID missing for this barcode.")
             return
 
-        suppliers_for_item = mapping_df[mapping_df["itemid"] == item_id]["supplierid"].dropna().astype(int).tolist()
+        suppliers_for_item = (
+            mapping_df[mapping_df["itemid"] == item_id]["supplierid"]
+            .dropna()
+            .astype(int)
+            .tolist()
+        )
         if not suppliers_for_item:
             name_eng = str(found_row.get("itemnameenglish", "Unnamed"))
             st.warning(f"No supplier found for item '{name_eng}'.")
@@ -295,9 +304,10 @@ def manual_po_page():
             created_by = st.session_state.get("user_email", "ManualUser")
 
             any_success = False
+            po_handler = get_po_handler()
             for supid, supinfo in po_by_supplier.items():
                 try:
-                    poid = po_handler.create_manual_po(
+                    _ = po_handler.create_manual_po(
                         supid, expected_dt, supinfo["items"], created_by
                     )
                     any_success = True
